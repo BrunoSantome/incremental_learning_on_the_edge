@@ -5,21 +5,36 @@ split_names: ["train_set", "test_set", "eval_set"]
 dataset:
   name: "qanastek/MASSIVE"
   languages: ["en-US"]
+  columns: ["id", "utt", "intent"] # for more languages add "locale"
   lang: "locale"
   text: "utt"
   label: "intent"
   num_labels: 60
+  # pretrain intents: # 15 intents
+  #   play_music:            1
+  #   audio_volume_down:     5
+  #   audio_volume_mute:     7
+  #   audio_volume_up:      10
+  #   play_game:            14
+  #   weather_query:        19
+  #   news_query:           20
+  #   transport_taxi:       24
+  #   play_audiobook:       35
+  #   email_addcontact:     36
+  #   lists_createoradd:    37
+  #   play_radio:           38
+  #   datetime_query:       46
+  #   transport_query:      51
+  #   alarm_set:            55
+  pretrain_intents: [1, 5, 7, 10, 14, 19, 20, 24, 35, 36, 37, 38, 46, 51, 55]
+# reserve intents (to-learn): # 5 intents
+  #   takeaway_order:           25
+  #   general_joke:             31
+  #   recommendation_locations: 32
+  #   transport_traffic:        47
+  #   play_podcasts:            48
+  reserve_intents: [25, 31, 32, 47, 48]
 
-
-# teacher1:
-#   name: "FacebookAI/xlm-roberta-base"
-#   epochs: 10
-#   lr: 2.0e-5
-#   decay: 0.01
-#   patience: 3
-#   batch_size: 32
-#   output_dir: "outputs/checkpoints/teacher_xlmr"
-#   warm-up: 0.1
 
 teacher2:
   name: "FacebookAI/xlm-roberta-large"
