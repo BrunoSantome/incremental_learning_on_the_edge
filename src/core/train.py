@@ -1,4 +1,4 @@
-from utils import build_model
+from utils import build_model, compute_class_weights
 from configuration import set_seed, load_config
 from dataloader import DataClass
 from transformers import get_linear_schedule_with_warmup
@@ -32,12 +32,15 @@ class Trainer:
     ):  # the seed for reproducibility
         set_seed(seed)
         self.model = model
+        self.num_labels = self.model.config.num_labels
         self.dataloaders_dict = dataloaders
         self.train_dataloader = dataloaders["train_set"]
         self.eval_dataloader = dataloaders["eval_set"]
         self.config = config
         self.model_name = model_name
         self.epochs = config[model_name]["epochs"]
+        weight_scheme = config[model_name]["class_weights"]
+
         if torch.cuda.is_available():  # check if cuda is available
             self.device = torch.device("cuda")
         else:
@@ -49,12 +52,20 @@ class Trainer:
         ][
             "patience"
         ]  # patience for early stopping, Number of epochs to wait before stopping if the results are not improved.
+        class_weights = compute_class_weights(
+            self.train_dataloader, self.num_labels, weight_scheme, self.device
+        )  # this calculates the class weights for an imbalanced dataset.
         self.optimizer = torch.optim.AdamW(  # Adamw optimzer loading the decay-rate
             self.model.parameters(),
             lr=config[self.model_name]["lr"],
             weight_decay=config[self.model_name]["decay"],
         )
-
+        self.criterion = torch.nn.CrossEntropyLoss(
+            weight=class_weights
+        )  # class weighted CE
+        self.eval_criterion = (
+            torch.nn.CrossEntropyLoss()
+        )  # no weights in the evaluation loop
         self.training_steps = len(self.train_dataloader) * self.epochs
         self.scheduler = (
             get_linear_schedule_with_warmup(  # Scheduler with warm-up steps
@@ -93,11 +104,14 @@ class Trainer:
             #     "attention_mask": batch["attention_mask"].to(self.device),
             #     "labels": batch["labels"].to(self.device),
             # }
+            labels = batch.pop("labels")
             self.optimizer.zero_grad()
             with torch.amp.autocast(device_type=self.device.type):
-                # labels = batch.pop("labels")
                 outputs = self.model(**batch)
-                loss = outputs.loss
+                loss = self.criterion(
+                    outputs.logits.float(),
+                    labels,  # loss in fp32 under amp, avoiding computer cross entropy on fp16 logits under autocast
+                )
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
@@ -163,11 +177,14 @@ class Trainer:
             ):
                 locales = batch.pop("locale")
                 batch = {k: v.to(self.device) for k, v in batch.items()}
+                labels = batch.pop("labels")
                 with torch.amp.autocast(device_type=self.device.type):
                     outputs = self.model(**batch)
-                eval_losses.append(outputs.loss.item())
+                eval_losses.append(
+                    self.eval_criterion(outputs.logits.float(), labels).item()
+                )
                 y_predicted += outputs.logits.argmax(-1).cpu().tolist()
-                y_true += batch["labels"].cpu().tolist()
+                y_true += labels.cpu().tolist()
                 y_locales += list(locales)
 
         avg_loss = sum(eval_losses) / len(eval_losses)
