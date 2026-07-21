@@ -61,7 +61,7 @@ class DataClass:
         }
         return id2intent, intent2id
 
-    def fit_tokenizer(self, tokenizer, max_length=128, keep_utt=False):
+    def fit_tokenizer(self, dataset, tokenizer, max_length=128, keep_utt=False):
         """
         This function fits a specific tokenizer to the dataset. Since Each model depends on a certain tokenization strategy
         XLM-Roberta uses SentecePiece, MiniLM uses WordPiece, DistilmBERT miltilingual uses WordPiece
@@ -83,12 +83,12 @@ class DataClass:
         datasets_tokenized = {}
         # The map() method works by applying a function on each element of the dataset, so let’s define a function that tokenizes our inputs
         for s in self.sets_names:
-            if keep_utt:  # keep the utterance like locale to use for the different tokenizers in the distillation loop.
-                split_tok = self.dataset[s].map(
+            if keep_utt:  # keep the utterance like  to use for localethe different tokenizers in the distillation loop.
+                split_tok = dataset[s].map(
                     tokenize, batched=True, remove_columns=["id"]
                 )
             else:
-                split_tok = self.dataset_dict[s].map(
+                split_tok = dataset[s].map(
                     tokenize, batched=True, remove_columns=["id", "utt"]
                 )  # callback function with the batch of data.
             split_tok = split_tok.rename_column("intent", "labels")
@@ -108,10 +108,11 @@ class DataClass:
             datasets_tokenized[s] = split_tok
         return datasets_tokenized
 
-    def feed_dataloader(self, dataset_tokenized, batch_size=16):
+    def feed_dataloader(self, dataset_tokenized, model_key):
         """
         Once the dataset is tokenized it needs to be transformed to DataLoader format for training purposes with PyTorch
         """
+        batch_size = self.config[model_key]["batch_size"]
         dataloaders = {}
         for s in self.sets_names:
             dataloaders[s] = DataLoader(
@@ -121,6 +122,14 @@ class DataClass:
                 # collate_fn=data_collator,
             )
         return dataloaders
+
+    def get_dataloader_data(self, model_key, tokenizer, pre_data=True):
+        if pre_data:
+            dft_pre = self.fit_tokenizer(self.dataset_pretraining, tokenizer)
+            return self.feed_dataloader(dft_pre, model_key)
+        if not pre_data:
+            dft_post = self.fit_tokenizer(self.dataset_totrain, tokenizer)
+            return self.feed_dataloader(dft_post, model_key)
 
 
 if __name__ == "__main__":
