@@ -12,3 +12,5 @@ class constants:
     NAME = "name"
     COLUMNS = "columns"
     LANG = "languages"
+    PRE_TRAIN_INTENTS = "pretrain_intents"
+    REGISTRY_PATH = "registry_path"

@@ -1,6 +1,6 @@
-from utils import build_model, compute_class_weights
-from configuration import set_seed, load_config
-from dataloader import DataClass
+from .utils import build_model, compute_class_weights
+from .configuration import set_seed, load_config
+from .dataloader import DataClass
 from transformers import get_linear_schedule_with_warmup
 import torch
 from tqdm import tqdm
@@ -25,7 +25,7 @@ class Trainer:
     def __init__(
         self,
         model,  # The model to be trained
-        model_name,  # the key of the model for config loading purposes
+        model_key,  # the key of the model for config loading purposes
         dataloaders,  # the data to train on
         config,  # the configuration loaded from config.yaml
         seed=42,
@@ -33,13 +33,14 @@ class Trainer:
         set_seed(seed)
         self.model = model
         self.num_labels = self.model.config.num_labels
+
         self.dataloaders_dict = dataloaders
         self.train_dataloader = dataloaders["train_set"]
         self.eval_dataloader = dataloaders["eval_set"]
         self.config = config
-        self.model_name = model_name
-        self.epochs = config[model_name]["epochs"]
-        weight_scheme = config[model_name]["class_weights"]
+        self.model_key = model_key
+        self.epochs = config[model_key]["epochs"]
+        weight_scheme = config[model_key]["class_weights"]
 
         if torch.cuda.is_available():  # check if cuda is available
             self.device = torch.device("cuda")
@@ -48,7 +49,7 @@ class Trainer:
 
         self.model.to(self.device)  # moves model to GPU
         self.patience = config[
-            model_name
+            model_key
         ][
             "patience"
         ]  # patience for early stopping, Number of epochs to wait before stopping if the results are not improved.
@@ -57,8 +58,8 @@ class Trainer:
         )  # this calculates the class weights for an imbalanced dataset.
         self.optimizer = torch.optim.AdamW(  # Adamw optimzer loading the decay-rate
             self.model.parameters(),
-            lr=config[self.model_name]["lr"],
-            weight_decay=config[self.model_name]["decay"],
+            lr=config[self.model_key]["lr"],
+            weight_decay=config[self.model_key]["decay"],
         )
         self.criterion = torch.nn.CrossEntropyLoss(
             weight=class_weights
@@ -71,7 +72,7 @@ class Trainer:
             get_linear_schedule_with_warmup(  # Scheduler with warm-up steps
                 self.optimizer,
                 num_warmup_steps=int(
-                    self.training_steps * config[self.model_name]["warm-up"]
+                    self.training_steps * config[self.model_key]["warm-up"]
                 ),
                 num_training_steps=self.training_steps,
             )
@@ -84,7 +85,7 @@ class Trainer:
         self.best_eval_loss = float("inf")
         self.patience_counter = 0
         self.best_macro_f1 = 0.0
-        self.checkpoint_path = config[self.model_name]["output_dir"]
+        self.checkpoint_path = config[self.model_key]["output_dir"]
         os.makedirs(self.checkpoint_path, exist_ok=True)
         # ~need to init list of loss and metrics? create evaluation ?
 
@@ -94,8 +95,7 @@ class Trainer:
         for batch in tqdm(
             self.train_dataloader, desc=f"training epoch: {epoch}/{self.epochs}"
         ):
-            # print(batch.keys())
-            locales = batch.pop("locale")
+            _ = batch.pop("locale")
             batch = {
                 k: v.to(self.device) for k, v in batch.items()
             }  # pass to the device all tensors.
@@ -129,10 +129,11 @@ class Trainer:
 
     def train(self):
         wandb.init(
-            project=f"Teacher_model-{self.config[self.model_name]['name']}".replace(
+            project=f"Teacher_model-{self.config[self.model_key]['name']}".replace(
                 "/", "-"
             ),
-            name=self.model_name,
+            name=self.model_key,
+            config=self.config[self.model_key],
         )
         # start training
         for epoch in range(0, self.epochs):
@@ -157,7 +158,7 @@ class Trainer:
                     break
 
         with open(
-            os.path.join(self.checkpoint_path, f"history-{self.model_name}.json"), "w"
+            os.path.join(self.checkpoint_path, f"history-{self.model_key}.json"), "w"
         ) as f:
             json.dump(self.history, f, indent=2)
 
@@ -217,7 +218,7 @@ if __name__ == "__main__":
     config = load_config()
     dataclass = DataClass()
     model_key = "teacher"
-    model, tokenizer, _ = build_model(config[model_key]["name"])
+    model, tokenizer, _ = build_model(config[model_key]["name"], dataclass.num_labels)
     dft_pre_dataloader = dataclass.get_dataloader_data(model_key, tokenizer)
     trainer = Trainer(model, model_key, dft_pre_dataloader, config)
     trainer.train()

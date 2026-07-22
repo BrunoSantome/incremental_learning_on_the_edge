@@ -1,15 +1,18 @@
 seed: 42
 device: "cuda"
 split_names: ["train_set", "test_set", "eval_set"]
+registry_path: "outputs/intent_registry.json"  
 
 dataset:
   name: "qanastek/MASSIVE"
   languages: ["en-US"]
-  columns: ["id", "utt", "intent"] # for more languages add "locale"
+  columns: ["id", "utt", "intent", "locale"] 
   lang: "locale"
   text: "utt"
   label: "intent"
-  num_labels: 60
+  
+  # Number of classes is derived at runtime from the intent registry (see registry_path),
+  # not hardcoded: pretrain phase = len(pretrain_intents), growing as new intents are learned.
   # pretrain intents: # 15 intents
   #   play_music:            1
   #   audio_volume_down:     5
@@ -34,3 +37,34 @@ dataset:
   #   transport_traffic:        47
   #   play_podcasts:            48
   reserve_intents: [25, 31, 32, 47, 48]
+
+
+teacher:
+  name: "microsoft/deberta-v3-large"
+  epochs: 15
+  lr: 1.0e-5
+  decay: 0.01
+  patience: 5
+  batch_size: 16
+  warm-up: 0.1
+  class_weights: "sqrt_inv"
+  output_dir: "outputs/checkpoints/teacher_xlmr"
+
+student1: 
+  name: "jhu-clsp/ettin-encoder-32m"
+
+student2: 
+  name: "jhu-clsp/ettin-encoder-68m"
+
+
+student3:
+  name: "nreimers/MiniLM-L6-H384-uncased"
+  epochs: 40
+  lr: 3.0e-5
+  decay: 0.01 
+  patience: 5 #3
+  batch_size: 32
+  # output_dir: "outputs/checkpoints/student2_minilm_l6"
+  warm-up: 0.1
+  temperature: 3.0
+  alpha: 0.3 #0.7

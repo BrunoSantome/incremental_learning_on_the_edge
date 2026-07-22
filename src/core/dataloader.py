@@ -1,7 +1,9 @@
-from datasets import load_dataset, DatasetDict, concatenate_datasets
+import os
+from datasets import load_dataset, DatasetDict, concatenate_datasets, Value
 from torch.utils.data import DataLoader
-from configuration import load_config, set_seed
-from constants import constants
+from .configuration import load_config, set_seed
+from .constants import constants
+from .registry import IntentRegistry
 
 
 class DataClass:
@@ -12,8 +14,33 @@ class DataClass:
         self.label_col = self.config[constants.DATASET][constants.LABEL]
         self.dataset_name = self.config[constants.DATASET][constants.NAME]
         self.dataset_col_selected = self.config[constants.DATASET][constants.COLUMNS]
+        self.registry_path = self._resolve_path(
+            self.config[constants.REGISTRY_PATH]
+        )  # ADD TO CONFIG
+
         self.dataset_dict = self.load_massive_dataset()
+        # Map raw MASSIVE intent ids -> names, then build the persistent, global
+        # intent registry from the pretrain intents (indices 0..N-1).
+        names = self.dataset_dict[self.sets_names[0]].features[self.label_col].names
+        self.id2name = {i: name for i, name in enumerate(names)}
+        pretrain_names = [
+            self.id2name[i]
+            for i in self.config[constants.DATASET][constants.PRE_TRAIN_INTENTS]
+        ]
+        self.registry = IntentRegistry.get_or_create(pretrain_names, self.registry_path)
         self.dataset_pretraining, self.dataset_totrain = self.split_by_intent_sets()
+
+    @staticmethod
+    def _resolve_path(path):
+        if os.path.isabs(path):
+            return path
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_dir, path)
+
+    @property
+    def num_labels(self):
+        """Number of classes in the current (pretrain) phase, from the registry."""
+        return self.registry.num_intents
 
     def load_massive_dataset(self):
         """
@@ -37,6 +64,10 @@ class DataClass:
     def split_by_intent_sets(self):
         """
         Splits a DatasetDict into pre-training intents and reserved (to-learn) intents.
+
+        The pretrain split has its labels remapped from the raw MASSIVE ids to the
+        contiguous registry indices (0..N-1) so the classifier head is sized to the
+        intents that actually appear.
         """
         pretrain_ids = set(self.config["dataset"]["pretrain_intents"])
         reserve_ids = set(self.config["dataset"]["reserve_intents"])
@@ -47,7 +78,49 @@ class DataClass:
         reserve_ds = self.dataset_dict.filter(
             lambda ex: ex[self.label_col] in reserve_ids
         )
+        pretrain_ds = self._remap_to_registry(pretrain_ds)
+        self._validate_labels(pretrain_ds)
+        reserve_ds = self._remap_to_names(reserve_ds)
         return pretrain_ds, reserve_ds
+
+    def _remap_to_registry(self, dataset_dict):
+        """Rewrite raw MASSIVE intent ids to contiguous registry indices."""
+
+        def remap(ex):
+            ex[self.label_col] = self.registry[self.id2name[ex[self.label_col]]]
+            return ex
+
+        dataset_dict = dataset_dict.map(remap)
+        # Drop the stale ClassLabel metadata (its 60 names no longer match the values).
+        dataset_dict = dataset_dict.cast_column(self.label_col, Value("int64"))
+        return dataset_dict
+
+    def _remap_to_names(self, dataset_dict):
+        """
+        These intents have noregistry index until they are learned, so a raw numeric id here would be a
+        The name is resolved to an index via registry.add_intent(name) at admission.
+        """
+
+        # Cast off ClassLabel first: otherwise map() returning a name string would be
+        # re-encoded by ClassLabel straight back to the raw id, undoing the mapping.
+        dataset_dict = dataset_dict.cast_column(self.label_col, Value("int64"))
+
+        def remap(ex):
+            ex[self.label_col] = self.id2name[ex[self.label_col]]
+            return ex
+
+        dataset_dict = dataset_dict.map(remap)
+        dataset_dict = dataset_dict.cast_column(self.label_col, Value("string"))
+        return dataset_dict
+
+    def _validate_labels(self, dataset_dict):
+        """Sanity check: remapped labels must fill exactly range(num_labels)."""
+        expected = set(range(self.num_labels))
+        for split in self.sets_names:
+            found = set(dataset_dict[split].unique(self.label_col))
+            assert found <= expected, (
+                f"{split}: labels {found - expected} outside 0..{self.num_labels - 1}"
+            )
 
     def label_map(self, data):
         """
@@ -132,7 +205,7 @@ class DataClass:
             return self.feed_dataloader(dft_post, model_key)
 
 
-if __name__ == "__main__":
-    dataset = DataClass()
-    print(dataset.dataset_pretraining)
-    print(dataset.dataset_totrain)
+# if __name__ == "__main__":
+#     dataset = DataClass()
+#     print(dataset.dataset_pretraining)
+#     print(dataset.dataset_totrain)
