@@ -3,14 +3,19 @@ import torch
 import numpy as np
 
 
-def build_model(name, n_labels=60):
+def build_model(name, n_labels):
     """
-    Simple method to build the model and return the associated tokenizer
+    Simple method to build the model and return the associated tokenizer.
 
+    ``n_labels`` must be passed explicitly (e.g. ``DataClass.num_labels``) so the
+    classifier head matches the intents present in the current phase instead of a
+    fixed, oversized label space.
     """
     tokenizer = AutoTokenizer.from_pretrained(name)
     model = AutoModelForSequenceClassification.from_pretrained(
-        name, num_labels=n_labels
+        name,
+        num_labels=n_labels,
+        torch_dtype=torch.float32,
     )
     return model, tokenizer, model.num_parameters(only_trainable=True)
 
