@@ -214,11 +214,12 @@ class Trainer:
 
 ### Main to test the class before starting the proper training on google collab.
 
-if __name__ == "__main__":
-    config = load_config()
-    dataclass = DataClass()
-    model_key = "teacher"
-    model, tokenizer, _ = build_model(config[model_key]["name"], dataclass.num_labels)
-    dft_pre_dataloader = dataclass.get_dataloader_data(model_key, tokenizer)
-    trainer = Trainer(model, model_key, dft_pre_dataloader, config)
-    trainer.train()
+# if __name__ == "__main__":
+#     config = load_config()
+#     dataclass = DataClass()
+#     model_key = "student1"
+#     set_seed(42)
+#     model, tokenizer, _ = build_model(config[model_key]["name"], dataclass.num_labels)
+#     dft_pre_dataloader = dataclass.get_dataloader_data(model_key, tokenizer)
+#     trainer = Trainer(model, model_key, dft_pre_dataloader, config)
+#     trainer.train()
