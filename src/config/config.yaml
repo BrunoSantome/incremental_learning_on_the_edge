@@ -51,10 +51,18 @@ teacher:
   output_dir: "outputs/checkpoints/teacher_xlmr"
 
 student1: 
-  name: "jhu-clsp/ettin-encoder-32m"
+  name: "jhu-clsp/ettin-encoder-68m"
+  epochs: 40
+  lr: 8.0e-5
+  decay: 0.01
+  patience: 10
+  batch_size: 32
+  warm-up: 0.1
+  class_weights: "sqrt_inv"
+  output_dir: "outputs/checkpoints/student_ettin_68m"
 
 student2: 
-  name: "jhu-clsp/ettin-encoder-68m"
+  name: "jhu-clsp/  "
 
 
 student3:
@@ -64,7 +72,7 @@ student3:
   decay: 0.01 
   patience: 5 #3
   batch_size: 32
-  # output_dir: "outputs/checkpoints/student2_minilm_l6"
+  #output_dir: "outputs/checkpoints/student2_minilm_l6"
   warm-up: 0.1
   temperature: 3.0
   alpha: 0.3 #0.7
