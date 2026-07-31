@@ -114,7 +114,7 @@ class DistillationTrainer:
             False
         )  # No backpropagation needed for the teacher and it saves memory
         self.patience = config[student_name]["patience"]
-        class_weights = compute_class_weights(
+        self.class_weights = compute_class_weights(
             self.train_dataloader, self.num_labels, weight_scheme, self.device
         )  # this calculates the class weights for an imbalanced dataset.
         self.T = config[student_name]["temperature"]
