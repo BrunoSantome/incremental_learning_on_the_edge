@@ -1,11 +1,6 @@
-from .utils import build_model
+from .utils import build_model, compute_class_weights
 from .configuration import load_config, set_seed
-from .dataloader import (
-    load_massive_dataset,
-    label_map,
-    fit_tokenizer,
-    feed_dataloader,
-)
+from .dataloader import DataClass
 from transformers import (
     get_linear_schedule_with_warmup,
     AutoModelForSequenceClassification,
@@ -28,17 +23,21 @@ import json
 
 
 """
- switch from hard loss to weighted CE change eval_criterion. 
  Run_distillation function is to be changed but on notebook
- config parameters of temperature and alpha
  Confirm the teacher checkpoint's num_labels equals the student's registry count.
+ 
  Check if worth changing the distillation class entirely to another for the incremental distillation or 
  change the class so it can be used in both use cases: Distillatin of edge model V0 and incremental V1,V2,V3 
 
+
+ weights are computed from the student's labels in the train dataloader. weighting only affects the (1 - alpha) hard term — with alpha=0.3
+ the hard loss is the dominant 0.7 share, so the weighting will have real effect
 """
 
 
-def distillation_loss(student_logits, teacher_logits, labels, T, alpha):
+def distillation_loss(
+    student_logits, teacher_logits, labels, T, alpha, class_weights=None
+):
     """
     Formal distillation loss following Hinton et al's
 
@@ -50,7 +49,7 @@ def distillation_loss(student_logits, teacher_logits, labels, T, alpha):
     soft_prob = nn.functional.log_softmax(
         student_logits / T, dim=-1
     )  # students logits to match the same "temperature scale"
-    hard_loss = F.cross_entropy(student_logits, labels)
+    hard_loss = F.cross_entropy(student_logits.float(), labels, weight=class_weights)
     # Calculate the soft targets loss. Scaled by T**2 as suggested by the authors of the paper
     # "Distilling the knowledge in a neural network" - KL Divergence - how much the student's distribution diverges from the teacher's
     soft_targets_loss = (
@@ -95,6 +94,7 @@ class DistillationTrainer:
         self.config = config
         self.student_name = student_name
         self.epochs = config[student_name]["epochs"]
+        weight_scheme = config[self.student_name]["class_weights"]
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
@@ -106,6 +106,9 @@ class DistillationTrainer:
             False
         )  # No backpropagation needed for the teacher and it saves memory
         self.patience = config[student_name]["patience"]
+        class_weights = compute_class_weights(
+            self.train_dataloader, self.num_labels, weight_scheme, self.device
+        )  # this calculates the class weights for an imbalanced dataset.
         self.T = config[student_name]["temperature"]
         self.alpha = config[student_name]["alpha"]
         self.optimizer = torch.optim.AdamW(
@@ -170,6 +173,7 @@ class DistillationTrainer:
                     student_batch["labels"],
                     self.T,
                     self.alpha,
+                    self.class_weights,
                 )
             # loss = self.criterion(outputs.logits, labels)
             self.scaler.scale(loss).backward()
@@ -272,26 +276,26 @@ class DistillationTrainer:
         return metrics
 
 
-def run_distillation_training(
-    df, teacher_model, teacher_tokenizer, models_keys, config
-):
+# def run_distillation_training(
+#     df, teacher_model, teacher_tokenizer, models_keys, config
+# ):
 
-    for key in models_keys:
-        student_model_name = config[key]["name"]
-        student_model, student_tokenizer, num_param = build_model(student_model_name)
-        dft = fit_tokenizer(df, student_tokenizer, config["split_names"], keep_utt=True)
-        dft_dataloaders = feed_dataloader(
-            dft, config["split_names"], config[key]["batch_size"]
-        )
-        trainer = DistillationTrainer(
-            student_model=student_model,
-            teacher_model=teacher_model,
-            student_name=key,
-            teacher_tokenizer=teacher_tokenizer,
-            student_dataloaders=dft_dataloaders,
-            config=config,
-        )
-        trainer.train()
+#     for key in models_keys:
+#         student_model_name = config[key]["name"]
+#         student_model, student_tokenizer, num_param = build_model(student_model_name)
+#         dft = fit_tokenizer(df, student_tokenizer, config["split_names"], keep_utt=True)
+#         dft_dataloaders = feed_dataloader(
+#             dft, config["split_names"], config[key]["batch_size"]
+#         )
+#         trainer = DistillationTrainer(
+#             student_model=student_model,
+#             teacher_model=teacher_model,
+#             student_name=key,
+#             teacher_tokenizer=teacher_tokenizer,
+#             student_dataloaders=dft_dataloaders,
+#             config=config,
+#         )
+#         trainer.train()
 
 
 ### Main to test the class before starting the proper training on google collab.
