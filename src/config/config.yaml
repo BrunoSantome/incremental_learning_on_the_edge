@@ -60,6 +60,8 @@ student1:
   warm-up: 0.1
   class_weights: "sqrt_inv"
   output_dir: "outputs/checkpoints/student_ettin_68m"
+  temperature: 3.0
+  alpha: 0.3 #0.7
 
 student2: 
   name: "jhu-clsp/  "

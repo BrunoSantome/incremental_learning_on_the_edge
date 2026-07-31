@@ -84,9 +84,17 @@ class DistillationTrainer:
         seed=42,
     ):
         set_seed(seed)  # reproducibility
-
         self.student_model = student_model
         self.teacher_model = teacher_model
+
+        student_n = self.student_model.config.num_labels
+        teacher_n = self.teacher_model.config.num_labels
+        if student_n != teacher_n:
+            raise ValueError(
+                f"Label-space mismatch: student={student_n}, teacher={teacher_n}. "
+                "Distillation requires matching classifier heads."
+            )
+        self.num_labels = student_n
         self.student_dataloaders = student_dataloaders
         self.train_dataloader = student_dataloaders["train_set"]
         self.eval_dataloader = student_dataloaders["eval_set"]
@@ -276,56 +284,25 @@ class DistillationTrainer:
         return metrics
 
 
-# def run_distillation_training(
-#     df, teacher_model, teacher_tokenizer, models_keys, config
-# ):
-
-#     for key in models_keys:
-#         student_model_name = config[key]["name"]
-#         student_model, student_tokenizer, num_param = build_model(student_model_name)
-#         dft = fit_tokenizer(df, student_tokenizer, config["split_names"], keep_utt=True)
-#         dft_dataloaders = feed_dataloader(
-#             dft, config["split_names"], config[key]["batch_size"]
-#         )
-#         trainer = DistillationTrainer(
-#             student_model=student_model,
-#             teacher_model=teacher_model,
-#             student_name=key,
-#             teacher_tokenizer=teacher_tokenizer,
-#             student_dataloaders=dft_dataloaders,
-#             config=config,
-#         )
-#         trainer.train()
+def run_distillation_training(
+    dataclass, teacher_model, teacher_tokenizer, models_keys, config
+):
+    for key in models_keys:
+        student_model, student_tokenizer, _ = build_model(
+            config[key]["name"], dataclass.num_labels
+        )
+        dft_pre_dataloader = dataclass.get_dataloader_data(key, student_tokenizer)
+        trainer = DistillationTrainer(
+            student_model=student_model,
+            teacher_model=teacher_model,
+            student_name=key,
+            teacher_tokenizer=teacher_tokenizer,
+            student_dataloaders=dft_pre_dataloader,
+            config=config,
+        )
+        trainer.train()
 
 
 ### Main to test the class before starting the proper training on google collab.
 
 # if __name__ == "__main__":
-#     config = load_config()
-#     df = load_massive_dataset(
-#         config, config["dataset"]["languages"], config["split_names"]
-#     )
-#     teacher_path = "outputs/checkpoints/teacher_xlmr2"
-#     teacher_model = AutoModelForSequenceClassification.from_pretrained(teacher_path)
-#     teacher_tokenizer = AutoTokenizer.from_pretrained(config["teacher2"]["name"])
-#     model_keys = ["student1", "student2"]
-#     run_distillation_training(df, teacher_model, teacher_tokenizer, model_keys, config)
-
-#     # # Obtain model name by argument. Implement argument parser.
-#     # model_key = "student2"
-#     # example_model = config[model_key]["name"]
-#     # model, tokenizer, num_param = build_model(example_model)
-#     # dft = fit_tokenizer(df, tokenizer, config["split_names"])
-#     # dft_dataloaders = feed_dataloader(
-#     #     dft, config["split_names"], config[model_key]["batch_size"]
-#     # )
-#     # trainer = Trainer(model, model_key, dft_dataloaders, config)
-#     # trainer.train()
-#     # config = load_config()
-#     # df = load_massive_dataset(
-#     #     config, config["dataset"]["languages"], config["split_names"]
-#     # )
-#     # # models_keys = ["teacher", "student1", "student2"]
-#     # models_keys = ["student1", "student2"]
-
-#     # run_all_models(df, models_keys, config)
