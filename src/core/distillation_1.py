@@ -291,7 +291,9 @@ def run_distillation_training(
         student_model, student_tokenizer, _ = build_model(
             config[key]["name"], dataclass.num_labels
         )
-        dft_pre_dataloader = dataclass.get_dataloader_data(key, student_tokenizer)
+        dft_pre_dataloader = dataclass.get_dataloader_data(
+            key, student_tokenizer, keep_utt=True
+        )
         trainer = DistillationTrainer(
             student_model=student_model,
             teacher_model=teacher_model,

@@ -196,13 +196,18 @@ class DataClass:
             )
         return dataloaders
 
-    def get_dataloader_data(self, model_key, tokenizer, pre_data=True):
-        if pre_data:
-            dft_pre = self.fit_tokenizer(self.dataset_pretraining, tokenizer)
-            return self.feed_dataloader(dft_pre, model_key)
-        if not pre_data:
-            dft_post = self.fit_tokenizer(self.dataset_totrain, tokenizer)
-            return self.feed_dataloader(dft_post, model_key)
+
+def get_dataloader_data(self, model_key, tokenizer, pre_data=True, keep_utt=False):
+    if pre_data:
+        dft_pre = self.fit_tokenizer(
+            self.dataset_pretraining, tokenizer, keep_utt=keep_utt
+        )
+        return self.feed_dataloader(dft_pre, model_key)
+    if not pre_data:
+        dft_post = self.fit_tokenizer(
+            self.dataset_totrain, tokenizer, keep_utt=keep_utt
+        )
+        return self.feed_dataloader(dft_post, model_key)
 
 
 # if __name__ == "__main__":
