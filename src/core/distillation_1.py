@@ -25,10 +25,11 @@ import json
 """
  Run_distillation function is to be changed but on notebook
  Confirm the teacher checkpoint's num_labels equals the student's registry count.
- 
- Check if worth changing the distillation class entirely to another for the incremental distillation or 
- change the class so it can be used in both use cases: Distillatin of edge model V0 and incremental V1,V2,V3 
 
+ Distillation is split into a shared BaseDistillationTrainer (training loop, eval,
+ early stopping, wandb, checkpointing) and thin subclasses per use case:
+- DistillationTrainerV0    -> edge model V0 (DeBERTa teacher, different tokenizer)
+- TODO: IncrementalDistiller     -> V1, V2, ... VN (rolling previous student as teacher)  [TODO]
 
  weights are computed from the student's labels in the train dataloader. weighting only affects the (1 - alpha) hard term — with alpha=0.3
  the hard loss is the dominant 0.7 share, so the weighting will have real effect
@@ -66,11 +67,17 @@ def distillation_loss(
     return alpha * soft_targets_loss + (1 - alpha) * hard_loss
 
 
-class DistillationTrainer:
+class BaseDistillationTrainer:
     """
-    Distillation Trainer class which performs knowledge distillation using a teacher's inference on a student model.
-    The class mimics most of the training methodologies used in the directly fine-tuned Trainer class.
+    Shared knowledge-distillation machinery: optimizer/scheduler/AMP setup, the epoch
+    loop, evaluation, early stopping, wandb logging and checkpointing. Mirrors most of
+    the training methodology of the directly fine-tuned Trainer class.
 
+    Variant-specific behaviour is delegated to two hooks the subclasses implement:
+      ==> _setup_label_space`` -> validate teacher/student head sizes and set
+        ``self.num_labels`` (V0 requires an exact match; incremental steps grow it).
+      ==> _train_one_epoch the forward/loss step, which differs in the teacher
+        tokenizer  and (for incremental) in which logits enter the KD term.
     """
 
     def __init__(
@@ -86,15 +93,6 @@ class DistillationTrainer:
         set_seed(seed)  # reproducibility
         self.student_model = student_model
         self.teacher_model = teacher_model
-
-        student_n = self.student_model.config.num_labels
-        teacher_n = self.teacher_model.config.num_labels
-        if student_n != teacher_n:
-            raise ValueError(
-                f"Label-space mismatch: student={student_n}, teacher={teacher_n}. "
-                "Distillation requires matching classifier heads."
-            )
-        self.num_labels = student_n
         self.student_dataloaders = student_dataloaders
         self.train_dataloader = student_dataloaders["train_set"]
         self.eval_dataloader = student_dataloaders["eval_set"]
@@ -104,6 +102,10 @@ class DistillationTrainer:
         distill_cfg = config[student_name]["distill"]
         self.epochs = config[student_name]["epochs"]
         weight_scheme = config[self.student_name]["class_weights"]
+
+        # Variant-specific: validate the head sizes and set self.num_labels.
+        self._setup_label_space()
+
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
@@ -146,60 +148,16 @@ class DistillationTrainer:
         self.checkpoint_path = distill_cfg["output_dir"]
         os.makedirs(self.checkpoint_path, exist_ok=True)
 
-    def _train_one_epoch(self, epoch):
-        training_loss = []
-        self.student_model.train()
-        for batch in tqdm(
-            self.train_dataloader, desc=f"training epoch: {epoch}/{self.epochs}"
-        ):
-            locales = batch.pop("locale")
-            utt = batch.pop("utt")
-            # Different tokenizer than students
-            teacher_batch = self.teacher_tokenizer(
-                utt,
-                truncation=True,
-                padding="max_length",
-                max_length=128,
-                return_tensors="pt",
-            )
-            # moving batches to GPU like student batch
-            teacher_batch = {k: v.to(self.device) for k, v in teacher_batch.items()}
-            student_batch = {k: v.to(self.device) for k, v in batch.items()}
-            self.optimizer.zero_grad()
-            with torch.amp.autocast(device_type=self.device.type):
-                # Forward pass of teacher for soft logits distribution
-                with torch.no_grad():
-                    teacher_outputs = self.teacher_model(
-                        input_ids=teacher_batch["input_ids"],
-                        attention_mask=teacher_batch["attention_mask"],
-                    )
-                # Forward pass of student model for student softmax logits
-                student_outputs = self.student_model(**student_batch)
-                # loss = outputs.loss
-                loss = distillation_loss(
-                    student_outputs.logits,
-                    teacher_outputs.logits,
-                    student_batch["labels"],
-                    self.T,
-                    self.alpha,
-                    self.class_weights,
-                )
-            # loss = self.criterion(outputs.logits, labels)
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                self.student_model.parameters(), max_norm=1.0
-            )  # Gradient Clipping: Constraining the gradients during backpropagation to a predefined range
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            # Log running loss to wandb
-            self.scheduler.step()
-            wandb.log({"training_loss_step": loss.item()})
-            training_loss.append(loss.item())
-        return sum(training_loss) / len(
-            training_loss
-        )  # average training loss across the epoch
+    # hooks - interfaces
+    def _setup_label_space(self):
+        """Validate teacher/student head sizes and set ``self.num_labels``."""
+        raise NotImplementedError
 
+    def _train_one_epoch(self, epoch):
+        """One training epoch; returns the average training loss."""
+        raise NotImplementedError
+
+    # shared train/eval of DistilledV0 and DistilledIncremental
     def train(self):
         wandb.init(
             project=f"kd-multilingual-{self.config[self.student_name]['name']}".replace(
@@ -286,6 +244,82 @@ class DistillationTrainer:
         return metrics
 
 
+class DistillationTrainerV0(BaseDistillationTrainer):
+    """
+    Edge model V0: distil a large teacher ( DeBERTa) into the small student.
+    Teacher and student use different tokenizers, so each batch's raw utterances is
+    re-tokenised for the teacher, and both share the same label space.
+    """
+
+    def _setup_label_space(self):
+        student_n = self.student_model.config.num_labels
+        teacher_n = self.teacher_model.config.num_labels
+        if student_n != teacher_n:
+            raise ValueError(
+                f"Label-space mismatch: student={student_n}, teacher={teacher_n}. "
+                "Distillation requires matching classifier heads."
+            )
+        self.num_labels = student_n
+
+    def _train_one_epoch(self, epoch):
+        training_loss = []
+        self.student_model.train()
+        for batch in tqdm(
+            self.train_dataloader, desc=f"training epoch: {epoch}/{self.epochs}"
+        ):
+            locales = batch.pop("locale")
+            utt = batch.pop("utt")
+            # Different tokenizer than students
+            teacher_batch = self.teacher_tokenizer(
+                utt,
+                truncation=True,
+                padding="max_length",
+                max_length=128,
+                return_tensors="pt",
+            )
+            # moving batches to GPU like student batch
+            teacher_batch = {k: v.to(self.device) for k, v in teacher_batch.items()}
+            student_batch = {k: v.to(self.device) for k, v in batch.items()}
+            self.optimizer.zero_grad()
+            with torch.amp.autocast(device_type=self.device.type):
+                # Forward pass of teacher for soft logits distribution
+                with torch.no_grad():
+                    teacher_outputs = self.teacher_model(
+                        input_ids=teacher_batch["input_ids"],
+                        attention_mask=teacher_batch["attention_mask"],
+                    )
+                # Forward pass of student model for student softmax logits
+                student_outputs = self.student_model(**student_batch)
+                # loss = outputs.loss
+                loss = distillation_loss(
+                    student_outputs.logits,
+                    teacher_outputs.logits,
+                    student_batch["labels"],
+                    self.T,
+                    self.alpha,
+                    self.class_weights,
+                )
+            # loss = self.criterion(outputs.logits, labels)
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                self.student_model.parameters(), max_norm=1.0
+            )  # Gradient Clipping: Constraining the gradients during backpropagation to a predefined range
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            # Log running loss to wandb
+            self.scheduler.step()
+            wandb.log({"training_loss_step": loss.item()})
+            training_loss.append(loss.item())
+        return sum(training_loss) / len(
+            training_loss
+        )  # average training loss across the epoch
+
+
+# TODO: CHange imports in notebooks and erase this backwards compatibility of both classes
+DistillationTrainer = DistillationTrainerV0
+
+
 def run_distillation_training(
     dataclass, teacher_model, teacher_tokenizer, models_keys, config
 ):
@@ -296,7 +330,7 @@ def run_distillation_training(
         dft_pre_dataloader = dataclass.get_dataloader_data(
             key, student_tokenizer, keep_utt=True
         )
-        trainer = DistillationTrainer(
+        trainer = DistillationTrainerV0(
             student_model=student_model,
             teacher_model=teacher_model,
             student_name=key,
