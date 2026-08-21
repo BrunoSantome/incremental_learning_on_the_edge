@@ -37,20 +37,36 @@ import json
 
 
 def distillation_loss(
-    student_logits, teacher_logits, labels, T, alpha, class_weights=None
+    student_logits, teacher_logits, labels, T, alpha, class_weights=None, n_old=None
 ):
     """
     Formal distillation loss following Hinton et al's
 
+    # we add the n_old variable which means the number of n old intents compared to the current version of the model.
+    Since we are performing distillation over the old set of intents to preserve the performance of the model on them,
+    the teacher only covers the n_old classes.
+
+
     """
+
+    if n_old is None:
+        kd_student_logits = student_logits  # Using the whole Head
+    else:
+        kd_student_logits = student_logits[
+            :, :n_old
+        ]  # a slice of the [0, n_old-1] classes - only performing Knowledge Distillation on this part of the Head
 
     soft_targets = nn.functional.softmax(
         teacher_logits / T, dim=-1
     )  # revealing dark knowledge with temperature
-    soft_prob = nn.functional.log_softmax(
-        student_logits / T, dim=-1
-    )  # students logits to match the same "temperature scale"
+
     hard_loss = F.cross_entropy(student_logits.float(), labels, weight=class_weights)
+    # learns new + reinforces the old intents
+    # it is needed to align the indices of the old class logits to the current new model, for that since the new intent is
+    # only added at the end, 0 to n_old-1 are the same classes in V0 and V1
+
+    soft_prob = nn.functional.log_softmax(kd_student_logits / T, dim=-1)
+
     # Calculate the soft targets loss. Scaled by T**2 as suggested by the authors of the paper
     # "Distilling the knowledge in a neural network" - KL Divergence - how much the student's distribution diverges from the teacher's
     soft_targets_loss = (
@@ -339,6 +355,78 @@ def run_distillation_training(
             config=config,
         )
         trainer.train()
+
+
+class IncrementalDistiller(BaseDistillationTrainer):
+    """
+    this class inherits from the base distillation trainer and is used for the iteration where
+    a knowledge increment occurs, it has to be handled differently than the original student model
+    since the teacher model switches to the previous model of the previous iteration, and whilst you are incrementing
+    the intent capability of the model, it needs to perform K.D. over the previously known intents to avoid catastrophic forgetting
+
+    """
+
+    def _setup_label_space(self):
+        student_n = self.student_model.config.num_labels
+        teacher_n = self.teacher_model.config.num_labels
+        if student_n <= teacher_n:
+            raise ValueError(
+                f"Label-space mismatch: student={student_n}, teacher={teacher_n}. "
+                "Incremental step requires the student head to have grown and therefore be bigger than the teacher"
+            )
+
+        self.num_labels = student_n  # This here is the full head: old intents + the fresh newly added one
+        self.n_old = teacher_n  # the number of n_old intents correspond to the intents of the teacher model
+        self.n_new = (
+            student_n - teacher_n
+        )  # How many intents were admitted in this step !! This means that it is not restricted to a single new intent added per iteration
+
+    def _train_one_epoch(self, epoch):
+        training_loss = []
+        self.student_model.train()
+        for batch in tqdm(
+            self.train_dataloader, desc=f"training epoch: {epoch}/{self.epochs}"
+        ):
+            locales = batch.pop("locale")
+            utt = batch.pop("utt")
+            # here the tokenizer is not needed, since both teacher and student share the same.
+            # moving batches to GPU like student batch
+            student_batch = {k: v.to(self.device) for k, v in batch.items()}
+            self.optimizer.zero_grad()
+            with torch.amp.autocast(device_type=self.device.type):
+                # Forward pass of teacher for soft logits distribution
+                with torch.no_grad():
+                    teacher_outputs = self.teacher_model(
+                        input_ids=student_batch["input_ids"],
+                        attention_mask=student_batch["attention_mask"],
+                    )
+                # Forward pass of student model for student softmax logits
+                student_outputs = self.student_model(**student_batch)
+                # loss = outputs.loss
+                loss = distillation_loss(
+                    student_outputs.logits,
+                    teacher_outputs.logits,
+                    student_batch["labels"],
+                    self.T,
+                    self.alpha,
+                    self.class_weights,
+                    n_old=self.n_old,  # we pass here the teacher's old intents positions
+                )
+            # loss = self.criterion(outputs.logits, labels)
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                self.student_model.parameters(), max_norm=1.0
+            )  # Gradient Clipping: Constraining the gradients during backpropagation to a predefined range
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            # Log running loss to wandb
+            self.scheduler.step()
+            wandb.log({"training_loss_step": loss.item()})
+            training_loss.append(loss.item())
+        return sum(training_loss) / len(
+            training_loss
+        )  # average training loss across the epoch
 
 
 ### Main to test the class before starting the proper training on google collab.
