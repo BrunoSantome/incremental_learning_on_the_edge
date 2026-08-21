@@ -62,6 +62,7 @@ student1:
   output_dir: "outputs/checkpoints/student_ettin_68m"
   temperature: 3.0
   alpha: 0.3 #0.7
+  label_smoothing: 0.1
 
 # student2: 
 #   name: "jhu-clsp/  "
