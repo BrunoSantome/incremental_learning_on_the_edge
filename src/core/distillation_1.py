@@ -206,6 +206,7 @@ class DistillationTrainer:
                 "/", "-"
             ),
             name=self.student_name,
+            config=self.config[self.student_name],
         )
         # start training
         for epoch in range(0, self.epochs):
