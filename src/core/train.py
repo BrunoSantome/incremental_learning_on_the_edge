@@ -64,9 +64,9 @@ class Trainer:
         self.criterion_smoothing = torch.nn.CrossEntropyLoss(
             weight=class_weights, label_smoothing=label_smoothing
         )
-        self.criterion = torch.nn.CrossEntropyLoss(
-            weight=class_weights
-        )  # class weighted CE
+        # self.criterion = torch.nn.CrossEntropyLoss(
+        #     weight=class_weights
+        # )  # class weighted CE
         self.eval_criterion = (
             torch.nn.CrossEntropyLoss()
         )  # no weights in the evaluation loop
@@ -111,7 +111,7 @@ class Trainer:
             self.optimizer.zero_grad()
             with torch.amp.autocast(device_type=self.device.type):
                 outputs = self.model(**batch)
-                loss = self.criterion(
+                loss = self.criterion_smoothing(
                     outputs.logits.float(),
                     labels,  # loss in fp32 under amp, avoiding computer cross entropy on fp16 logits under autocast
                 )
