@@ -48,13 +48,13 @@ teacher:
   batch_size: 16
   warm-up: 0.1
   class_weights: "sqrt_inv"
-  output_dir: "outputs/checkpoints/teacher_xlmr"
+  output_dir: "outputs/checkpoints/teacher_deberta-v3-large"
 
 student1: 
   name: "jhu-clsp/ettin-encoder-68m"
   epochs: 20
   lr: 5.0e-5
-  decay: 0.01
+  decay: 0.05
   patience: 5
   batch_size: 32
   warm-up: 0.1
@@ -63,18 +63,18 @@ student1:
   temperature: 3.0
   alpha: 0.3 #0.7
 
-student2: 
-  name: "jhu-clsp/  "
+# student2: 
+#   name: "jhu-clsp/  "
 
 
-student3:
-  name: "nreimers/MiniLM-L6-H384-uncased"
-  epochs: 40
-  lr: 3.0e-5
-  decay: 0.01 
-  patience: 5 #3
-  batch_size: 32
-  #output_dir: "outputs/checkpoints/student2_minilm_l6"
-  warm-up: 0.1
-  temperature: 3.0
-  alpha: 0.3 #0.7
+# student3:
+#   name: "nreimers/MiniLM-L6-H384-uncased"
+#   epochs: 40
+#   lr: 3.0e-5
+#   decay: 0.01 
+#   patience: 5 #3
+#   batch_size: 32
+#   #output_dir: "outputs/checkpoints/student2_minilm_l6"
+#   warm-up: 0.1
+#   temperature: 3.0
+#   alpha: 0.3 #0.7

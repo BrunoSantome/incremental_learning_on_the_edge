@@ -33,7 +33,6 @@ class Trainer:
         set_seed(seed)
         self.model = model
         self.num_labels = self.model.config.num_labels
-
         self.dataloaders_dict = dataloaders
         self.train_dataloader = dataloaders["train_set"]
         self.eval_dataloader = dataloaders["eval_set"]
@@ -60,6 +59,10 @@ class Trainer:
             self.model.parameters(),
             lr=config[self.model_key]["lr"],
             weight_decay=config[self.model_key]["decay"],
+        )
+        label_smoothing = config[model_key].get("label_smoothing", 0.0)
+        self.criterion_smoothing = torch.nn.CrossEntropyLoss(
+            weight=class_weights, label_smoothing=label_smoothing
         )
         self.criterion = torch.nn.CrossEntropyLoss(
             weight=class_weights
@@ -162,7 +165,7 @@ class Trainer:
         ) as f:
             json.dump(self.history, f, indent=2)
 
-        self.model.save_pretrained(f"{self.checkpoint_path}_last")
+        self.model.save_pretrained(f"{self.checkpoint_path}_direct_last")
         wandb.finish()
 
     def _eval(self, epoch):
