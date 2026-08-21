@@ -50,19 +50,24 @@ teacher:
   class_weights: "sqrt_inv"
   output_dir: "outputs/checkpoints/teacher_deberta-v3-large"
 
-student1: 
+student1:
   name: "jhu-clsp/ettin-encoder-68m"
   epochs: 20
   lr: 5.0e-5
-  decay: 0.05
   patience: 5
   batch_size: 32
   warm-up: 0.1
   class_weights: "sqrt_inv"
-  output_dir: "outputs/checkpoints/student_ettin_68m"
-  temperature: 3.0
-  alpha: 0.3 #0.7
+  # direct fine-tune / baseline (read by Trainer)
+  decay: 0.05
   label_smoothing: 0.1
+  output_dir: "outputs/checkpoints/student_ettin_68m_finetune"
+  #knowledge-distillation overrides (read by DistillationTrainer)
+  distill:
+    decay: 0.01
+    temperature: 3.0
+    alpha: 0.3
+    output_dir: "outputs/checkpoints/student_ettin_68m_distill"
 
 # student2: 
 #   name: "jhu-clsp/  "

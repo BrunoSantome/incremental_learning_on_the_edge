@@ -101,6 +101,7 @@ class DistillationTrainer:
         self.teacher_tokenizer = teacher_tokenizer
         self.config = config
         self.student_name = student_name
+        distill_cfg = config[student_name]["distill"]
         self.epochs = config[student_name]["epochs"]
         weight_scheme = config[self.student_name]["class_weights"]
         if torch.cuda.is_available():
@@ -117,12 +118,12 @@ class DistillationTrainer:
         self.class_weights = compute_class_weights(
             self.train_dataloader, self.num_labels, weight_scheme, self.device
         )  # this calculates the class weights for an imbalanced dataset.
-        self.T = config[student_name]["temperature"]
-        self.alpha = config[student_name]["alpha"]
+        self.T = distill_cfg["temperature"]
+        self.alpha = distill_cfg["alpha"]
         self.optimizer = torch.optim.AdamW(
             self.student_model.parameters(),
             lr=config[self.student_name]["lr"],
-            weight_decay=config[self.student_name]["decay"],
+            weight_decay=distill_cfg["decay"],
         )
 
         self.training_steps = len(self.train_dataloader) * self.epochs
@@ -142,7 +143,7 @@ class DistillationTrainer:
         }
         self.patience_counter = 0
         self.best_macro_f1 = 0.0
-        self.checkpoint_path = config[self.student_name]["output_dir"]
+        self.checkpoint_path = distill_cfg["output_dir"]
         os.makedirs(self.checkpoint_path, exist_ok=True)
 
     def _train_one_epoch(self, epoch):
@@ -224,7 +225,7 @@ class DistillationTrainer:
                 self.patience_counter = 0
                 self.best_macro_f1 = metrics["eval_macro_f1"]
                 print("Saving checkpoint")
-                self.student_model.save_pretrained(self.checkpoint_path)
+                self.student_model.save_pretrained(f"{self.checkpoint_path}_distilled")
             else:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:
@@ -236,7 +237,7 @@ class DistillationTrainer:
         ) as f:
             json.dump(self.history, f, indent=2)
 
-        self.student_model.save_pretrained(f"{self.checkpoint_path}_last")
+        self.student_model.save_pretrained(f"{self.checkpoint_path}_distilled_last")
         wandb.finish()
 
     def _eval(self, epoch):
