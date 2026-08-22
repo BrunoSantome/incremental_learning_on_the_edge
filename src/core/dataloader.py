@@ -113,6 +113,56 @@ class DataClass:
         dataset_dict = dataset_dict.cast_column(self.label_col, Value("string"))
         return dataset_dict
 
+    def admit_intent(self, new_intent_name, new_rows=None):
+        """
+        Add a new intent into the current pretrained_dataset.
+        it assings an integer that matches the new intent label
+        it changes the string of the intent with the number
+        it adds the new set of utterances into the pretrained_dataset
+        and removes it from the to_train in the experimental phase,
+        this changes when an LLM generates it
+        """
+        new_idx = self.registry.add_intent(
+            new_intent_name
+        )  # persists the name into the registry maping it to a new integer
+
+        merged = {}
+        for split in self.sets_names:
+            if new_rows is None:  # Experimental with original data for incremental step
+                rows = self.dataset_totrain[split].filter(
+                    lambda ex: ex[self.label_col] == new_intent_name
+                )
+                self.dataset_totrain[split] = self.dataset_totrain[split].filter(
+                    lambda ex: ex[self.label_col] != new_intent_name
+                )
+            else:  # TODO: LLM step: injected utterances for this split
+                rows = new_rows[split]
+
+            assert len(rows) > 0, (
+                f"no rows for intent '{new_intent_name}' in split '{split}'"
+            )  # make sure of no empty rows to not move on.
+
+            rows = self._relabel_to_index(rows, new_idx)  # name-string -> int64 index
+
+            # merge into the known set, and drop the intent from the reserve to-train set
+            merged[split] = concatenate_datasets(
+                [self.dataset_pretraining[split], rows]
+            )
+
+        self.dataset_pretraining = DatasetDict(merged)
+        return new_idx
+
+    def _relabel_to_index(self, dataset, idx):
+        """
+        Set every row's label to idx and make the column int64, so the rows concatenate
+        with dataset_pretraining.
+        """
+        dataset = dataset.map(
+            lambda ex: {self.label_col: idx}
+        )  # write the int into the col
+        dataset = dataset.cast_column(self.label_col, Value("int64"))  # pin the type
+        return dataset
+
     def _validate_labels(self, dataset_dict):
         """Sanity check: remapped labels must fill exactly range(num_labels)."""
         expected = set(range(self.num_labels))
