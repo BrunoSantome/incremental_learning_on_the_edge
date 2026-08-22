@@ -1,6 +1,7 @@
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import torch
 import numpy as np
+import torch.nn as nn
 
 
 def build_model(name, n_labels):
@@ -37,3 +38,28 @@ def compute_class_weights(dataloader, num_labels, scheme="sqrt_inv", device="cpu
 
     w = w / w.mean()  # keeps loss magnitude comparable to plain CE
     return torch.tensor(w, dtype=torch.float, device=device)
+
+
+def expand_student_head(model, n_new):
+    """
+    Method used to grow the head of a classifier from n_old to n_old + n_new,
+    preserving the weights of the n_old classes and randomely initializing the n_new one.
+
+    Warm start
+    """
+    n_old = model.config.num_labels
+    hidden = model.classifier.in_features
+    n_total = n_old + n_new
+
+    old_classifier = model.classifier
+    new_classifier = nn.Linear(hidden, n_total)  # init randomly all rows
+    with (
+        torch.no_grad()
+    ):  # this copies from the old_classifier weights and bias into the new classifier
+        new_classifier.weight[:n_old] = old_classifier.weight
+        new_classifier.bias[:n_old] = old_classifier.bias
+
+    model.classifier = new_classifier  # this is specific to the student model
+    model.config.num_labels = n_total  # we need to update also this, since we access the variable in setup_label_space
+    model.num_labels = n_total
+    return model
