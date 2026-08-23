@@ -358,6 +358,9 @@ def run_distillation_training(
             teacher_tokenizer=teacher_tokenizer,
             student_dataloaders=dft_pre_dataloader,
             config=config,
+            output_dir=_get_incremental_version_dir(
+                config, key, 0
+            ),  # adding this so it saves in the correct directory for incremental iterations.
         )
         trainer.train()
 
