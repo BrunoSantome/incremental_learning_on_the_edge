@@ -280,6 +280,26 @@ class DataClass:
             )
             return self.feed_dataloader(dft_post, model_key)
 
+    def build_incremental_dataloaders(self, student_key, tokenizer, K, seed=42):
+        """
+        This function creates the replay buffer data to re-train a model with previous utterances
+        matching K number so it is balanced across iterations, used for avoiding Catastrophical forgetting
+
+        """
+        train_split, test_split, eval_split = self.sets_names
+
+        incremental = DatasetDict(
+            {
+                train_split: self._balanced_sample(
+                    self.dataset_pretraining[train_split], K, seed
+                ),
+                test_split: self.dataset_pretraining[test_split],
+                eval_split: self.dataset_pretraining[eval_split],
+            }
+        )
+        tokenized = self.fit_tokenizer(incremental, tokenizer, keep_utt=True)
+        return self.feed_dataloader(tokenized, student_key)
+
 
 # if __name__ == "__main__":
 #     dataset = DataClass()
