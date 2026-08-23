@@ -1,4 +1,4 @@
-from .utils import build_model, compute_class_weights
+from .utils import build_model, compute_class_weights, expand_student_head
 from .configuration import load_config, set_seed
 from .dataloader import DataClass
 from transformers import (
@@ -105,6 +105,7 @@ class BaseDistillationTrainer:
         student_dataloaders,  # the dataloaders with the data to train on
         config,  # The configuration loaded from the config.yaml
         seed=42,
+        output_dir=None,  # overrides distill_cfg["output_dir"]; used for per-version incremental paths
     ):
         set_seed(seed)  # reproducibility
         self.student_model = student_model
@@ -161,7 +162,9 @@ class BaseDistillationTrainer:
         }
         self.patience_counter = 0
         self.best_macro_f1 = 0.0
-        self.checkpoint_path = distill_cfg["output_dir"]
+        # output_dir (if given) wins, so the incremental run can supply a per-version
+        # path (..._v1, ..._v2); V0 passes nothing and keeps the config value.
+        self.checkpoint_path = output_dir or distill_cfg["output_dir"]
         os.makedirs(self.checkpoint_path, exist_ok=True)
 
     # hooks - interfaces
@@ -200,7 +203,9 @@ class BaseDistillationTrainer:
                 self.patience_counter = 0
                 self.best_macro_f1 = metrics["eval_macro_f1"]
                 print("Saving checkpoint")
-                self.student_model.save_pretrained(f"{self.checkpoint_path}_distilled")
+                # Save the best model INTO the checkpoint dir itself, so it is the version
+                # dir the next incremental step loads as its teacher (clean rolling chain).
+                self.student_model.save_pretrained(self.checkpoint_path)
             else:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:
@@ -212,7 +217,7 @@ class BaseDistillationTrainer:
         ) as f:
             json.dump(self.history, f, indent=2)
 
-        self.student_model.save_pretrained(f"{self.checkpoint_path}_distilled_last")
+        self.student_model.save_pretrained(f"{self.checkpoint_path}_last")
         wandb.finish()
 
     def _eval(self, epoch):
@@ -337,7 +342,7 @@ DistillationTrainer = DistillationTrainerV0
 
 
 def run_distillation_training(
-    dataclass, teacher_model, teacher_tokenizer, models_keys, config
+    dataclass: DataClass, teacher_model, teacher_tokenizer, models_keys, config
 ):
     for key in models_keys:
         student_model, student_tokenizer, _ = build_model(
@@ -355,6 +360,67 @@ def run_distillation_training(
             config=config,
         )
         trainer.train()
+
+
+def run_incremental_step(
+    dataclass: DataClass,
+    new_intent_name,
+    student_key,
+    config,
+    version,
+    K,
+    seed=42,
+    new_utt=None,
+):
+    """
+    Method that performs a single incremental step of the model with a new intent.
+    - It adds the new intent to the dataclass
+    - it grows the head of the model with the frozen old teacher weights + randomly initializing the new class
+    - It creates the balanced set of data with the new utterances and new intent to pass on to the trainer
+    - It trains the new model
+    """
+    previous_chkpt = _get_incremental_version_dir(
+        config, student_key, version - 1
+    )  # teacher model directory
+    output_directory = _get_incremental_version_dir(
+        config, student_key, version
+    )  # where the new model will be stored
+
+    teacher_model = AutoModelForSequenceClassification.from_pretrained(previous_chkpt)
+    tokenizer = AutoTokenizer.from_pretrained(config[student_key]["name"])
+    # first we grow the label space with a new intent, for experimental using to-train set
+    dataclass.admit_intent(new_intent_name, new_utt=new_utt)
+    # second we perform the head growth of the classifier, always by 1 new intent per incremental iteration
+    # n_new is the result of the current num_Labels after admitting it and the previously trained VN model now used as teacher
+    n_new = dataclass.num_labels - teacher_model.config.num_labels
+    student_model = expand_student_head(
+        model=AutoModelForSequenceClassification.from_pretrained(previous_chkpt),
+        n_new=n_new,
+    )
+    # Once we have the student_model with the old weights frozen and the new one initialized
+    # we need the dataloader sets that are going to be using for the incremental training.
+
+    dataloader = dataclass.build_incremental_dataloaders(
+        student_key, tokenizer, K, seed
+    )  # this is the balanced replay buffer
+
+    trainer = IncrementalDistiller(
+        student_model=student_model,
+        teacher_model=teacher_model,
+        student_name=student_key,
+        teacher_tokenizer=tokenizer,
+        student_dataloaders=dataloader,
+        config=config,
+        seed=seed,
+        output_dir=output_directory,
+    )
+    trainer.train()
+    return output_directory
+
+
+def _get_incremental_version_dir(config, student_key, version):
+    base = config[student_key]["distill"]["output_dir"]
+    return f"{base}_v{version}"
 
 
 class IncrementalDistiller(BaseDistillationTrainer):

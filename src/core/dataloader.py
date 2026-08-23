@@ -120,7 +120,7 @@ class DataClass:
         dataset_dict = dataset_dict.cast_column(self.label_col, Value("string"))
         return dataset_dict
 
-    def admit_intent(self, new_intent_name, new_rows=None):
+    def admit_intent(self, new_intent_name, new_utt=None):
         """
         Add a new intent into the current pretrained_dataset.
         it assings an integer that matches the new intent label
@@ -135,7 +135,7 @@ class DataClass:
 
         merged = {}
         for split in self.sets_names:
-            if new_rows is None:  # Experimental with original data for incremental step
+            if new_utt is None:  # Experimental with original data for incremental step
                 rows = self.dataset_totrain[split].filter(
                     lambda ex: ex[self.label_col] == new_intent_name
                 )
@@ -143,7 +143,7 @@ class DataClass:
                     lambda ex: ex[self.label_col] != new_intent_name
                 )
             else:  # TODO: LLM step: injected utterances for this split
-                rows = new_rows[split]
+                rows = new_utt[split]
 
             assert len(rows) > 0, (
                 f"no rows for intent '{new_intent_name}' in split '{split}'"
