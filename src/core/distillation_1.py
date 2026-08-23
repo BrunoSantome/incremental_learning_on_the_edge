@@ -106,6 +106,7 @@ class BaseDistillationTrainer:
         config,  # The configuration loaded from the config.yaml
         seed=42,
         output_dir=None,  # overrides distill_cfg["output_dir"]; used for per-version incremental paths
+        version=None,  # version tag for the wandb run name
     ):
         set_seed(seed)  # reproducibility
         self.student_model = student_model
@@ -116,6 +117,7 @@ class BaseDistillationTrainer:
         self.teacher_tokenizer = teacher_tokenizer
         self.config = config
         self.student_name = student_name
+        self.version = version
         distill_cfg = config[student_name]["distill"]
         self.epochs = config[student_name]["epochs"]
         weight_scheme = config[self.student_name]["class_weights"]
@@ -176,13 +178,24 @@ class BaseDistillationTrainer:
         """One training epoch; returns the average training loss."""
         raise NotImplementedError
 
+    # One shared project for V0 and all incremental steps so their
+    # runs can be compared on the same charts; the run name carries the version
+    # TODO: add per-intent metrics, since comparing 15 intent model vs 16 intent model F1 overall metric is not representative.
+    def _wandb_project(self):
+        return f"kd-multilingual-{self.config[self.student_name]['name']}".replace(
+            "/", "-"
+        )
+
+    def _wandb_run_name(self):
+        if self.version is None:
+            return self.student_name
+        return f"{self.student_name}_v{self.version}"
+
     # shared train/eval of DistilledV0 and DistilledIncremental
     def train(self):
         wandb.init(
-            project=f"kd-multilingual-{self.config[self.student_name]['name']}".replace(
-                "/", "-"
-            ),
-            name=self.student_name,
+            project=self._wandb_project(),
+            name=self._wandb_run_name(),
             config=self.config[self.student_name],
         )
         # start training
@@ -361,6 +374,7 @@ def run_distillation_training(
             output_dir=_get_incremental_version_dir(
                 config, key, 0
             ),  # adding this so it saves in the correct directory for incremental iterations.
+            version=0,  # version V0 of the model
         )
         trainer.train()
 
@@ -416,6 +430,7 @@ def run_incremental_step(
         config=config,
         seed=seed,
         output_dir=output_directory,
+        version=version,  # wandb run name v1, v2,...
     )
     trainer.train()
     return output_directory
