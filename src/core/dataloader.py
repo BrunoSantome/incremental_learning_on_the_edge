@@ -4,6 +4,8 @@ from torch.utils.data import DataLoader
 from .configuration import load_config, set_seed
 from .constants import constants
 from .registry import IntentRegistry
+import random
+from collections import defaultdict
 
 
 class DataClass:
@@ -41,6 +43,11 @@ class DataClass:
     def num_labels(self):
         """Number of classes in the current (pretrain) phase, from the registry."""
         return self.registry.num_intents
+
+    @property
+    def id2intent(self):
+        """Index -> intent name, for readable evaluation / forgetting reports"""
+        return self.registry.id2intent
 
     def load_massive_dataset(self):
         """
@@ -162,6 +169,21 @@ class DataClass:
         )  # write the int into the col
         dataset = dataset.cast_column(self.label_col, Value("int64"))  # pin the type
         return dataset
+
+    def _balanced_sample(self, dataset, K, seed=42):
+        """At most K examples per intent, seeded so the buffer is reproducible."""
+        rng = random.Random(seed)
+        by_class = defaultdict(list)
+        for i, y in enumerate(dataset[self.label_col]):
+            by_class[y].append(i)
+
+        idx = []
+        for c in sorted(by_class):
+            rows = by_class[c]
+            rng.shuffle(rows)
+            idx += rows[:K]
+
+        return dataset.select(idx)
 
     def _validate_labels(self, dataset_dict):
         """Sanity check: remapped labels must fill exactly range(num_labels)."""
