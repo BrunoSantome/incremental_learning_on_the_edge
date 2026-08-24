@@ -107,6 +107,8 @@ class BaseDistillationTrainer:
         seed=42,
         output_dir=None,  # overrides distill_cfg["output_dir"]; used for per-version incremental paths
         version=None,  # version tag for the wandb run name
+        wandb_group=None,  # wandb group = experiment id for a chain of V1,...Vn runs
+        wandb_tags=None,  # wandb tags for filtering
     ):
         set_seed(seed)  # reproducibility
         self.student_model = student_model
@@ -118,6 +120,8 @@ class BaseDistillationTrainer:
         self.config = config
         self.student_name = student_name
         self.version = version
+        self.wandb_group = wandb_group
+        self.wandb_tags = wandb_tags
         distill_cfg = config[student_name]["distill"]
         self.epochs = config[student_name]["epochs"]
         weight_scheme = config[self.student_name]["class_weights"]
@@ -189,6 +193,9 @@ class BaseDistillationTrainer:
     def _wandb_run_name(self):
         if self.version is None:
             return self.student_name
+        if self.wandb_group is not None:
+            # "exp_id-v{n}"
+            return f"{self.wandb_group}-v{self.version}"
         return f"{self.student_name}_v{self.version}"
 
     # shared train/eval of DistilledV0 and DistilledIncremental
@@ -196,6 +203,8 @@ class BaseDistillationTrainer:
         wandb.init(
             project=self._wandb_project(),
             name=self._wandb_run_name(),
+            group=self.wandb_group,
+            tags=self.wandb_tags,
             config=self.config[self.student_name],
         )
         # start training
@@ -460,6 +469,8 @@ def run_incremental_step(
     K,
     seed=42,
     new_utt=None,
+    wandb_group=None,
+    wandb_tags=None,
 ):
     """
     Method that performs a single incremental step of the model with a new intent.
@@ -503,12 +514,16 @@ def run_incremental_step(
         seed=seed,
         output_dir=output_directory,
         version=version,  # wandb run name v1, v2,...
+        wandb_group=wandb_group,
+        wandb_tags=wandb_tags,
     )
     trainer.train()
     return output_directory
 
 
-def run_incremental_experiment(intents_to_add, student_key, config, K, seed=42):
+def run_incremental_experiment(
+    intents_to_add, student_key, config, K, seed=42, exp_name=None
+):
     """
     This method is only to be used for the experimental phase.
     It is thought to run on the incremental intents saved on the to-train set to test
@@ -516,7 +531,15 @@ def run_incremental_experiment(intents_to_add, student_key, config, K, seed=42):
     Every time you run this method it starts from the same V0 version of the model, it can increment
     up to 5 new intents.
 
+    All versions of one run share a wandb group: exp_id.
+    Different experiments (different K/alpha/T/seed) stay separable.
     """
+    distill_cfg = config[student_key]["distill"]
+    exp_id = (
+        exp_name  # if exp_name is False use the default constructed
+        or f"K{K}_a{distill_cfg['alpha']}_T{distill_cfg['temperature']}_s{seed}"
+    )
+
     registry_path = DataClass._resolve_path(
         config["registry_path"]
     )  # refresh of this file needed at every new experiment
@@ -529,7 +552,15 @@ def run_incremental_experiment(intents_to_add, student_key, config, K, seed=42):
     for version, intent_name in enumerate(intents_to_add, start=1):
         print(f"v{version}: adding intent: {intent_name}")
         run_incremental_step(
-            dataclass, intent_name, student_key, config, version, K, seed
+            dataclass,
+            intent_name,
+            student_key,
+            config,
+            version,
+            K,
+            seed,
+            wandb_group=exp_id,
+            wandb_tags=[f"K{K}", f"seed{seed}", intent_name],
         )
     return dataclass  # we return the dataclass to perform a good evaluation on the resulting dataset
 
