@@ -7,11 +7,13 @@ from .distillation_1 import _get_incremental_version_dir
 import pandas as pd
 
 
-def evaluate_test_set(model, test_dataloader, device):
+def evaluate_test_set(model, test_dataloader, device=None):
     """
     Method that mimics the evaluation method during training, used to evaluate a model on the test split.
 
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     model.to(device)
 
@@ -58,7 +60,7 @@ def evaluate_test_set(model, test_dataloader, device):
 
 
 def evaluate_per_intent(
-    model, test_dataloader, device, id2intent=None, num_labels=None
+    model, test_dataloader, device=None, id2intent=None, num_labels=None
 ):
     """
     Per-intent F1. Reuses evaluate_test_set, adds one F1 per class in index order.
@@ -89,7 +91,7 @@ def evaluate_per_intent(
     return metrics, per_intent_f1
 
 
-def intents_report(dataclass, student_key, config, n_versions, device):
+def intents_report(dataclass, student_key, config, n_versions, device=None):
     """
     Load each version's checkpoint (_v0.._v{n}) and score it on the TEST split
     restricted to the intents it knows.
