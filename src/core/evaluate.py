@@ -4,6 +4,7 @@ from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from .distillation_1 import _get_incremental_version_dir
+import pandas as pd
 
 
 def evaluate_test_set(model, test_dataloader, device):
@@ -117,3 +118,29 @@ def intents_report(dataclass, student_key, config, n_versions, device):
         metrics_by_version[n] = metrics
         print(f"V{n}: has {num_labels} intents on the test split")
     return rows, metrics_by_version
+
+
+def old_intent_persistance_table(rows, id2intent, n_original=15):
+    """
+    Table of the original intents F1 across versions + a mean-old row (the retention
+    forgetting number)
+    """
+
+    original = [id2intent[i] for i in range(n_original)]
+    data = {f"V{n}": {name: rows[n].get(name) for name in original} for n in rows}
+    df = pd.DataFrame(data)
+    df.loc["mean_old"] = df.mean()
+    return df
+
+
+def new_intent_acquisition_table(rows, id2intent, n_original=15):
+    """
+    Table of the new additional intents F1 across versions
+    old_intent_persistance_table (old) vs new_intent_acquisition_table (new)
+    """
+    n_versions = max(rows.keys())
+    new_names = [id2intent[i] for i in range(n_original, n_original + n_versions)]
+    data = {f"V{n}": {name: rows[n].get(name) for name in new_names} for n in rows}
+    df = pd.DataFrame(data)
+    df.loc["mean_new"] = df.mean()
+    return df
