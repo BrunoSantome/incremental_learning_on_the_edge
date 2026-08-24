@@ -70,17 +70,50 @@ def evaluate_per_intent(
         num_labels = model.config.num_labels
 
     all_label_ids = list(range(num_labels))
+
     f1_per_label = f1_score(
         true_labels,
         predicted_labels,
         labels=all_label_ids,
-        average=None,
+        average=None,  # no macro, no weighted,
         zero_division=0,
     )
 
     per_intent_f1 = {}
+
     for label_id in all_label_ids:
         key = id2intent[label_id] if id2intent else label_id
         per_intent_f1[key] = float(f1_per_label[label_id])
 
     return metrics, per_intent_f1
+
+
+def intents_report(dataclass, student_key, config, n_versions, device):
+    """
+    Load each version's checkpoint (_v0.._v{n}) and score it on the TEST split
+    restricted to the intents it knows.
+
+    This has to be perform after training, and the dataclass must be the same object altered by training
+    so the incremental intents have been added.
+    """
+
+    tokenizer = AutoTokenizer.from_pretrained(config[student_key]["name"])
+    id2intent = dataclass.id2intent
+    test_split = dataclass.sets_names[1]  # "test_set"
+
+    rows = {}  # version -> {intent_name: f1}
+    metrics_by_version = {}  # version -> aggregate metrics (macro/weighted f1, acc, loss, per-language)
+    for n in range(n_versions + 1):  # V0 .. Vn
+        checkpoint = _get_incremental_version_dir(config, student_key, n)
+        model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+        num_labels = model.config.num_labels  # 15 + n
+        loader = dataclass.build_split_loader(
+            test_split, tokenizer, student_key, max_label=num_labels
+        )
+        metrics, per_intent = evaluate_per_intent(
+            model, loader, device, id2intent, num_labels
+        )
+        rows[n] = per_intent
+        metrics_by_version[n] = metrics
+        print(f"V{n}: has {num_labels} intents on the test split")
+    return rows, metrics_by_version
