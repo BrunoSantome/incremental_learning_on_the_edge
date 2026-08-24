@@ -109,6 +109,7 @@ class BaseDistillationTrainer:
         version=None,  # version tag for the wandb run name
         wandb_group=None,  # wandb group = experiment id for a chain of V1,...Vn runs
         wandb_tags=None,  # wandb tags for filtering
+        id2intent=None,  # {index: name}
     ):
         set_seed(seed)  # reproducibility
         self.student_model = student_model
@@ -122,6 +123,7 @@ class BaseDistillationTrainer:
         self.version = version
         self.wandb_group = wandb_group
         self.wandb_tags = wandb_tags
+        self.id2intent = id2intent
         distill_cfg = config[student_name]["distill"]
         self.epochs = config[student_name]["epochs"]
         weight_scheme = config[self.student_name]["class_weights"]
@@ -284,6 +286,20 @@ class BaseDistillationTrainer:
             metrics[f"eval_weighted_f1_{language}"] = f1_score(
                 y_true_arr[mask], y_pred_arr[mask], average="weighted"
             )
+
+        # per-intent F1
+        per_intent = f1_score(
+            y_true,
+            y_predicted,
+            labels=list(
+                range(self.num_labels)
+            ),  # one score per class, stable index order
+            average=None,
+            zero_division=0,
+        )
+        for i, score in enumerate(per_intent):
+            name = self.id2intent[i] if self.id2intent else i
+            metrics[f"eval_f1_{name}"] = score
         return metrics
 
 
@@ -456,6 +472,7 @@ def run_distillation_training(
                 config, key, 0
             ),  # adding this so it saves in the correct directory for incremental iterations.
             version=0,  # version V0 of the model
+            id2intent=dataclass.id2intent,  # per-intent eval F1 logging
         )
         trainer.train()
 
@@ -516,6 +533,7 @@ def run_incremental_step(
         version=version,  # wandb run name v1, v2,...
         wandb_group=wandb_group,
         wandb_tags=wandb_tags,
+        id2intent=dataclass.id2intent,  # per-intent eval F1 logging
     )
     trainer.train()
     return output_directory
