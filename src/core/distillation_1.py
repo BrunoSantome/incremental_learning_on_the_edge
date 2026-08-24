@@ -455,6 +455,7 @@ def run_distillation_training(
     dataclass: DataClass, teacher_model, teacher_tokenizer, models_keys, config
 ):
     for key in models_keys:
+        set_seed(42)  # seed before build_model so V0's fresh head init is deterministic
         student_model, student_tokenizer, _ = build_model(
             config[key]["name"], dataclass.num_labels
         )
@@ -496,6 +497,7 @@ def run_incremental_step(
     - It creates the balanced set of data with the new utterances and new intent to pass on to the trainer
     - It trains the new model
     """
+    set_seed(seed)
     previous_chkpt = _get_incremental_version_dir(
         config, student_key, version - 1
     )  # teacher model directory
@@ -513,6 +515,7 @@ def run_incremental_step(
     student_model = expand_student_head(
         model=AutoModelForSequenceClassification.from_pretrained(previous_chkpt),
         n_new=n_new,
+        seed=seed,
     )
     # Once we have the student_model with the old weights frozen and the new one initialized
     # we need the dataloader sets that are going to be using for the incremental training.
