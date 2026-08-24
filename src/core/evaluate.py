@@ -2,6 +2,8 @@ import torch
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from .distillation_1 import _get_incremental_version_dir
 
 
 def evaluate_test_set(model, test_dataloader, device):
@@ -52,3 +54,33 @@ def evaluate_test_set(model, test_dataloader, device):
             y_true_arr[mask], y_pred_arr[mask], average="weighted"
         )
     return metrics, y_true, y_predicted
+
+
+def evaluate_per_intent(
+    model, test_dataloader, device, id2intent=None, num_labels=None
+):
+    """
+    Per-intent F1. Reuses evaluate_test_set, adds one F1 per class in index order.
+    """
+    metrics, true_labels, predicted_labels = evaluate_test_set(
+        model, test_dataloader, device
+    )
+
+    if num_labels is None:
+        num_labels = model.config.num_labels
+
+    all_label_ids = list(range(num_labels))
+    f1_per_label = f1_score(
+        true_labels,
+        predicted_labels,
+        labels=all_label_ids,
+        average=None,
+        zero_division=0,
+    )
+
+    per_intent_f1 = {}
+    for label_id in all_label_ids:
+        key = id2intent[label_id] if id2intent else label_id
+        per_intent_f1[key] = float(f1_per_label[label_id])
+
+    return metrics, per_intent_f1
