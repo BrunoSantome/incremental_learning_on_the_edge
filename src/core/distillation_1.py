@@ -354,6 +354,78 @@ class DistillationTrainerV0(BaseDistillationTrainer):
 DistillationTrainer = DistillationTrainerV0
 
 
+class IncrementalDistiller(BaseDistillationTrainer):
+    """
+    this class inherits from the base distillation trainer and is used for the iteration where
+    a knowledge increment occurs, it has to be handled differently than the original student model
+    since the teacher model switches to the previous model of the previous iteration, and whilst you are incrementing
+    the intent capability of the model, it needs to perform K.D. over the previously known intents to avoid catastrophic forgetting
+
+    """
+
+    def _setup_label_space(self):
+        student_n = self.student_model.config.num_labels
+        teacher_n = self.teacher_model.config.num_labels
+        if student_n <= teacher_n:
+            raise ValueError(
+                f"Label-space mismatch: student={student_n}, teacher={teacher_n}. "
+                "Incremental step requires the student head to have grown and therefore be bigger than the teacher"
+            )
+
+        self.num_labels = student_n  # This here is the full head: old intents + the fresh newly added one
+        self.n_old = teacher_n  # the number of n_old intents correspond to the intents of the teacher model
+        self.n_new = (
+            student_n - teacher_n
+        )  # How many intents were admitted in this step !! This means that it is not restricted to a single new intent added per iteration
+
+    def _train_one_epoch(self, epoch):
+        training_loss = []
+        self.student_model.train()
+        for batch in tqdm(
+            self.train_dataloader, desc=f"training epoch: {epoch}/{self.epochs}"
+        ):
+            locales = batch.pop("locale")
+            utt = batch.pop("utt")
+            # here the tokenizer is not needed, since both teacher and student share the same.
+            # moving batches to GPU like student batch
+            student_batch = {k: v.to(self.device) for k, v in batch.items()}
+            self.optimizer.zero_grad()
+            with torch.amp.autocast(device_type=self.device.type):
+                # Forward pass of teacher for soft logits distribution
+                with torch.no_grad():
+                    teacher_outputs = self.teacher_model(
+                        input_ids=student_batch["input_ids"],
+                        attention_mask=student_batch["attention_mask"],
+                    )
+                # Forward pass of student model for student softmax logits
+                student_outputs = self.student_model(**student_batch)
+                # loss = outputs.loss
+                loss = distillation_loss(
+                    student_outputs.logits,
+                    teacher_outputs.logits,
+                    student_batch["labels"],
+                    self.T,
+                    self.alpha,
+                    self.class_weights,
+                    n_old=self.n_old,  # we pass here the teacher's old intents positions
+                )
+            # loss = self.criterion(outputs.logits, labels)
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                self.student_model.parameters(), max_norm=1.0
+            )  # Gradient Clipping: Constraining the gradients during backpropagation to a predefined range
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            # Log running loss to wandb
+            self.scheduler.step()
+            wandb.log({"training_loss_step": loss.item()})
+            training_loss.append(loss.item())
+        return sum(training_loss) / len(
+            training_loss
+        )  # average training loss across the epoch
+
+
 def run_distillation_training(
     dataclass: DataClass, teacher_model, teacher_tokenizer, models_keys, config
 ):
@@ -436,81 +508,35 @@ def run_incremental_step(
     return output_directory
 
 
+def run_incremental_experiment(intents_to_add, student_key, config, K, seed=42):
+    """
+    This method is only to be used for the experimental phase.
+    It is thought to run on the incremental intents saved on the to-train set to test
+    the incremental pipeline before adding the LLM synthetic data generation.
+    Every time you run this method it starts from the same V0 version of the model, it can increment
+    up to 5 new intents.
+
+    """
+    registry_path = DataClass._resolve_path(
+        config["registry_path"]
+    )  # refresh of this file needed at every new experiment
+    if os.path.exists(registry_path):
+        os.remove(registry_path)
+
+    dataclass = (
+        DataClass()
+    )  # creates new instance of intent_registry.json at 15 intents
+    for version, intent_name in enumerate(intents_to_add, start=1):
+        print(f"v{version}: adding intent: {intent_name}")
+        run_incremental_step(
+            dataclass, intent_name, student_key, config, version, K, seed
+        )
+    return dataclass  # we return the dataclass to perform a good evaluation on the resulting dataset
+
+
 def _get_incremental_version_dir(config, student_key, version):
     base = config[student_key]["distill"]["output_dir"]
     return f"{base}_v{version}"
-
-
-class IncrementalDistiller(BaseDistillationTrainer):
-    """
-    this class inherits from the base distillation trainer and is used for the iteration where
-    a knowledge increment occurs, it has to be handled differently than the original student model
-    since the teacher model switches to the previous model of the previous iteration, and whilst you are incrementing
-    the intent capability of the model, it needs to perform K.D. over the previously known intents to avoid catastrophic forgetting
-
-    """
-
-    def _setup_label_space(self):
-        student_n = self.student_model.config.num_labels
-        teacher_n = self.teacher_model.config.num_labels
-        if student_n <= teacher_n:
-            raise ValueError(
-                f"Label-space mismatch: student={student_n}, teacher={teacher_n}. "
-                "Incremental step requires the student head to have grown and therefore be bigger than the teacher"
-            )
-
-        self.num_labels = student_n  # This here is the full head: old intents + the fresh newly added one
-        self.n_old = teacher_n  # the number of n_old intents correspond to the intents of the teacher model
-        self.n_new = (
-            student_n - teacher_n
-        )  # How many intents were admitted in this step !! This means that it is not restricted to a single new intent added per iteration
-
-    def _train_one_epoch(self, epoch):
-        training_loss = []
-        self.student_model.train()
-        for batch in tqdm(
-            self.train_dataloader, desc=f"training epoch: {epoch}/{self.epochs}"
-        ):
-            locales = batch.pop("locale")
-            utt = batch.pop("utt")
-            # here the tokenizer is not needed, since both teacher and student share the same.
-            # moving batches to GPU like student batch
-            student_batch = {k: v.to(self.device) for k, v in batch.items()}
-            self.optimizer.zero_grad()
-            with torch.amp.autocast(device_type=self.device.type):
-                # Forward pass of teacher for soft logits distribution
-                with torch.no_grad():
-                    teacher_outputs = self.teacher_model(
-                        input_ids=student_batch["input_ids"],
-                        attention_mask=student_batch["attention_mask"],
-                    )
-                # Forward pass of student model for student softmax logits
-                student_outputs = self.student_model(**student_batch)
-                # loss = outputs.loss
-                loss = distillation_loss(
-                    student_outputs.logits,
-                    teacher_outputs.logits,
-                    student_batch["labels"],
-                    self.T,
-                    self.alpha,
-                    self.class_weights,
-                    n_old=self.n_old,  # we pass here the teacher's old intents positions
-                )
-            # loss = self.criterion(outputs.logits, labels)
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                self.student_model.parameters(), max_norm=1.0
-            )  # Gradient Clipping: Constraining the gradients during backpropagation to a predefined range
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            # Log running loss to wandb
-            self.scheduler.step()
-            wandb.log({"training_loss_step": loss.item()})
-            training_loss.append(loss.item())
-        return sum(training_loss) / len(
-            training_loss
-        )  # average training loss across the epoch
 
 
 ### Main to test the class before starting the proper training on google collab.
