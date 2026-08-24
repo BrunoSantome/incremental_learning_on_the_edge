@@ -268,6 +268,50 @@ class DataClass:
             )
         return dataloaders
 
+    def _tokenize_split(self, dataset, tokenizer, max_length=128, keep_utt=True):
+        """
+        Tokenize a single split the same way fit_tokenizer
+        does per split. Used to build the evaluation test sets and possibly the eval set for every rolling incremental model
+        test-set for results comparison
+        train-set buffer balanced set to do a comparison between sampled-k split vs test-split to assess generalization/memorization over
+        the same set of samples, if it does, at each step the replay buffer needs adjusting, it needs to take a random set of utterances
+        instead of a fixed set over each incremental iteration.
+        """
+
+        def tokenize(batch):
+            return tokenizer(
+                batch["utt"],
+                truncation=True,
+                padding="max_length",
+                max_length=max_length,
+            )
+
+        remove = ["id"] if keep_utt else ["id", "utt"]
+        tok = dataset.map(tokenize, batched=True, remove_columns=remove)
+        tok = tok.rename_column("intent", "labels")
+        tensor_cols = [
+            c
+            for c in ["input_ids", "attention_mask", "token_type_ids", "labels"]
+            if c in tok.column_names
+        ]
+        tok.set_format(type="torch", columns=tensor_cols, output_all_columns=True)
+        return tok
+
+    def build_split_loader(
+        self, split, tokenizer, student_key, max_label=None, keep_utt=True
+    ):
+        """
+        DataLoader over one split of dataset_pretraining.
+        Needed to obtain the single dataloder over the tokenized split, rather than a set of dataloaders.
+        For incremental model evaluation.
+        """
+        ds = self.dataset_pretraining[split]
+        if max_label is not None:
+            ds = ds.filter(lambda ex: ex[self.label_col] < max_label)
+        tok = self._tokenize_split(ds, tokenizer, keep_utt=keep_utt)
+        batch_size = self.config[student_key]["batch_size"]
+        return DataLoader(tok, shuffle=False, batch_size=batch_size)
+
     def get_dataloader_data(self, model_key, tokenizer, pre_data=True, keep_utt=False):
         if pre_data:
             dft_pre = self.fit_tokenizer(
