@@ -40,7 +40,7 @@ def compute_class_weights(dataloader, num_labels, scheme="sqrt_inv", device="cpu
     return torch.tensor(w, dtype=torch.float, device=device)
 
 
-def expand_student_head(model, n_new):
+def expand_student_head(model, n_new, seed=42):
     """
     Method used to grow the head of a classifier from n_old to n_old + n_new,
     preserving the weights of the n_old classes and randomely initializing the n_new one.
@@ -52,6 +52,9 @@ def expand_student_head(model, n_new):
     n_total = n_old + n_new
 
     old_classifier = model.classifier
+    # Seed right before the random init so the new head row(s) are reproducible across
+    # runs (independent of any RNG consumed earlier).
+    torch.manual_seed(seed)
     new_classifier = nn.Linear(hidden, n_total)  # init randomly all rows
     with (
         torch.no_grad()
