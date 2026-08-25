@@ -29,7 +29,7 @@ import json
  Distillation is split into a shared BaseDistillationTrainer (training loop, eval,
  early stopping, wandb, checkpointing) and thin subclasses per use case:
 - DistillationTrainerV0    -> edge model V0 (DeBERTa teacher, different tokenizer)
-- TODO: IncrementalDistiller     -> V1, V2, ... VN (rolling previous student as teacher)  [TODO]
+- IncrementalDistiller     -> V1, V2, ... VN (rolling previous student as teacher)
 
  weights are computed from the student's labels in the train dataloader. weighting only affects the (1 - alpha) hard term — with alpha=0.3
  the hard loss is the dominant 0.7 share, so the weighting will have real effect
@@ -45,8 +45,6 @@ def distillation_loss(
     # we add the n_old variable which means the number of n old intents compared to the current version of the model.
     Since we are performing distillation over the old set of intents to preserve the performance of the model on them,
     the teacher only covers the n_old classes.
-
-
     """
 
     if n_old is None:
@@ -169,7 +167,7 @@ class BaseDistillationTrainer:
             "lr": [],
         }
         self.patience_counter = 0
-        self.best_macro_f1 = 0.0
+        self.best_selection = 0.0  # metric value at the best epoch
         # output_dir (if given) wins, so the incremental run can supply a per-version
         # path (..._v1, ..._v2); V0 passes nothing and keeps the config value.
         self.checkpoint_path = output_dir or distill_cfg["output_dir"]
@@ -183,6 +181,9 @@ class BaseDistillationTrainer:
     def _train_one_epoch(self, epoch):
         """One training epoch; returns the average training loss."""
         raise NotImplementedError
+
+    def _selection_metric(self, metrics):
+        return metrics["eval_macro_f1"]
 
     # One shared project for V0 and all incremental steps so their
     # runs can be compared on the same charts; the run name carries the version
@@ -221,11 +222,12 @@ class BaseDistillationTrainer:
                 self.history.setdefault(k, []).append(v)
 
             wandb.log({"epoch": epoch, "train_loss": loss, "lr": last_lr, **metrics})
+            selection = self._selection_metric(metrics)  # we get F1_score_macro for the
             if (
-                metrics["eval_macro_f1"] > self.best_macro_f1
-            ):  # Use f1 macro for early stopping.
+                selection > self.best_selection
+            ):  # base: macro-F1; incremental: retention+acquisition blend
                 self.patience_counter = 0
-                self.best_macro_f1 = metrics["eval_macro_f1"]
+                self.best_selection = selection
                 print("Saving checkpoint")
                 # Save the best model INTO the checkpoint dir itself, so it is the version
                 # dir the next incremental step loads as its teacher (clean rolling chain).
@@ -402,6 +404,28 @@ class IncrementalDistiller(BaseDistillationTrainer):
         self.n_new = (
             student_n - teacher_n
         )  # How many intents were admitted in this step !! This means that it is not restricted to a single new intent added per iteration
+
+    def _selection_metric(self, metrics):
+        """
+        During evaluation, the early stopping triggered at the best overall F1_macro score,
+        which did not match most of the times with the best epoch of the new intent, happening later in training,
+        (due to warm-start - the values of the other heads are the best already from the
+        previous model checkpoint at the start of the new Vn re-training), meaning that
+        the resulted model Macro-F1 peaks before the new head has finished learning;
+        w gives the new intent more space to learn properly.
+        w=0 means plain retention, checkpoint selected on the overall F1-macro score
+        w=1 means pure acquisition, checkpoint selected on the new intent
+        """
+        w = self.config[self.student_name]["distill"]["selection_new_weight"]
+        # old and new change every incremental step, which is why we need to calculate every time its number
+        old = [metrics[f"eval_f1_{self.id2intent[i]}"] for i in range(self.n_old)]
+        new = [
+            metrics[f"eval_f1_{self.id2intent[i]}"]
+            for i in range(self.n_old, self.num_labels)
+        ]
+        mean_old = sum(old) / len(old)
+        mean_new = sum(new) / len(new)
+        return (1 - w) * mean_old + w * mean_new  # Evaluation criteria
 
     def _train_one_epoch(self, epoch):
         training_loss = []
