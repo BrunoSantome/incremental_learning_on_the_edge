@@ -390,8 +390,34 @@ class DataClass:
             test_split: real_test_split,
         }
 
+    def build_intent_context(self, samples_per_intent=8, seed=42):
+        """
+        creates a sample of the balanced set for each known intent a set of utterances so
+        the LLM can have context about the structure of the real data for each intent and maybe
+        build the synthetic data accordingly.
+        """
+        buffer = self._balanced_sample(
+            self.dataset_pretraining[self.sets_names[0]], samples_per_intent, seed
+        )
+        context = defaultdict(
+            list
+        )  # this initializes the dict with the value you give it.
+        for ex in buffer:
+            context[self.id2intent[ex[self.label_col]]].append(ex["utt"])
+        return dict(context)
+
 
 # if __name__ == "__main__":
-#     dataset = DataClass()
-#     print(dataset.dataset_pretraining)
-#     print(dataset.dataset_totrain)
+# dc = DataClass()  # fresh, registry at 15
+# dummy = [
+#     "order takeaway for tonight",
+#     "get me food delivery",
+#     "I'd like takeout from the italian place",
+#     "deliver dinner to my address",
+#     "can you order a pizza",
+# ]
+# new_utt = dc.build_llm_new_utt("takeaway_order", dummy)
+# print(new_utt["train_set"].features == dc.dataset_totrain["train_set"].features)
+# print({k: len(v) for k, v in new_utt.items()})
+# idx = dc.admit_intent("takeaway_order", new_utt=new_utt)
+# print("admitted at", idx, "num_labels:", dc.num_labels)
