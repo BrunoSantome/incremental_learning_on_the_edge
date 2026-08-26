@@ -1,5 +1,5 @@
 import os
-from datasets import load_dataset, DatasetDict, concatenate_datasets, Value
+from datasets import load_dataset, DatasetDict, concatenate_datasets, Value, Dataset
 from torch.utils.data import DataLoader
 from .configuration import load_config, set_seed
 from .constants import constants
@@ -343,6 +343,52 @@ class DataClass:
         )
         tokenized = self.fit_tokenizer(incremental, tokenizer, keep_utt=True)
         return self.feed_dataloader(tokenized, student_key)
+
+    def build_llm_new_utt(self, intent_name, synthetic_utterances):
+        """
+        This is another experiment through the pipeline, we are using synthetic utterances for the training
+        but will evaluate and test on real data provided by the original MASSIVE dataset.
+
+        This differs from the idea of the LLM handling the generation of all the data, but it is necessary
+        to evaluate and compare against our previous experimental incremental run on 5 new intents, what happens
+        when the data of those same new intents are generated, for this and make both comparable we need real data
+        on the evaluation and testing, same as the experimental incremental run on real data
+
+        """
+
+        train_split, test_split, eval_split = self.sets_names
+
+        real_eval_split = self.dataset_totrain[eval_split].filter(
+            lambda ex: ex[self.label_col] == intent_name
+        )
+        real_test_split = self.dataset_totrain[test_split].filter(
+            lambda ex: ex[self.label_col] == intent_name
+        )
+        # dataclas = DataClass()
+        # print(dataclass.dataset_totrain["train_set"].features)
+
+        n = len(synthetic_utterances)
+
+        synth_data = Dataset.from_dict(
+            {
+                "id": [f"synth_{intent_name}_{i}" for i in range(n)],
+                "utt": list(synthetic_utterances),  # generated utterances
+                self.label_col: [intent_name]
+                * n,  # placeholder; admit_intent relabels it, same new intent
+                "locale": [self.languages[0]]
+                * n,  # en-US for this project, but can be changed
+            }
+        )
+
+        synth_data = synth_data.cast(
+            self.dataset_totrain[train_split].features
+        )  # schema match, important so it matches the real dataset.
+
+        return {
+            train_split: synth_data,
+            eval_split: real_eval_split,
+            test_split: real_test_split,
+        }
 
 
 # if __name__ == "__main__":
