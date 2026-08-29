@@ -60,11 +60,59 @@ def format_prompt(context, escalated_utts, target_intent, n_utterances):
     else:
         name_instruction = "Choose a concise snake_case name for this new intent."
 
-    user_content = f"""## Intents the classifier already knows (stay clearly distinct from these) {context_block} ## Escalated utterances (unknown intent to learn)
-{escalated_block}## Task Generate exactly {n_utterances} training utterances for the new intent expressed by the escalated examples above.
+    user_content = f"""## Intents the classifier already knows (stay clearly distinct from these)
+{context_block}
+
+## Escalated utterances (unknown intent to learn)
+{escalated_block}
+
+## Task
+Generate exactly {n_utterances} training utterances for the new intent expressed by the escalated examples above.
 {name_instruction} Return only the JSON object described in the instructions."""
 
     return {
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": user_content}],
     }
+
+
+class LLMClient:
+    def generate(self, prompt):
+        raise NotImplementedError
+
+
+class AnthropicClient(LLMClient):
+    """LLMClient backed by the Anthropic Messages API."""
+
+    def __init__(self, model, max_tokens):
+        from anthropic import (
+            Anthropic,
+        )  # lazy: only needed if you actually use this provider
+
+        self.model = model
+        self.max_tokens = max_tokens
+        # Zero-arg Anthropic() resolves credentials from the environment
+        # (ANTHROPIC_API_KEY, or an `ant auth login` profile).
+        self.client = Anthropic()
+
+    def generate(self, prompt):
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=prompt["system"],
+            messages=prompt["messages"],
+        )
+        # Concatenate the text blocks into the raw JSON string the model was told to emit.
+        return "".join(block.text for block in response.content if block.type == "text")
+
+
+PROVIDERS = {
+    "anthropic": AnthropicClient,
+}
+
+
+def build_llm_client(config):
+    """Build the LLM client from the llm block of the config."""
+    llm_cfg = dict(config["llm"])  # copy so the pop doesn't mutate the loaded config
+    provider = llm_cfg.pop("provider")
+    return PROVIDERS[provider](**llm_cfg)
