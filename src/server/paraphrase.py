@@ -121,41 +121,112 @@ def build_llm_client(config):
     return PROVIDERS[provider](**llm_cfg)
 
 
-if __name__ == "__main__":
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from core.configuration import load_config
-    from core.dataloader import DataClass
+# Function inmproved with AI, all the assertions have been created with AI. Help to parse a potential bad generated response that breaks the cycle
+def parse_and_validate(raw_text):
+    """
+    Parse the raw LLM JSON string into (intent_name, utterances), handling the known
+    failure modes:
+      - strips a stray ```...``` fence if the model wrapped its JSON;
+      - raises a clear ValueError on invalid JSON or a bad schema;
+      - cleans the utterances: strip, drop empties, de-duplicate case-insensitively
+        (order preserved), and skip any non-string entries.
+    """
 
-    #  ['takeaway_order', 'general_joke', 'recommendation_locations', 'play_podcasts', 'transport_traffic']
-    TARGET_INTENT = "takeaway_order"
-    N_UTTERANCES = 10
-    config = load_config()
-    data = DataClass()
-    context = data.build_intent_context()
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"LLM output was not valid JSON: {e}") from e
 
-    train_split = data.sets_names[0]
-    seed_rows = data.dataset_totrain[train_split].filter(
-        lambda ex: ex[data.label_col] == TARGET_INTENT
-    )
-    escalated_utts = [seed_rows[0]["utt"]]
+    # if not isinstance(data, dict):
+    #     raise ValueError(f"Expected a JSON object, got {type(data).__name__}")
 
+    intent_name = data.get("intent_name")
+    raw_utterances = data.get("utterances")
+
+    # if not isinstance(intent_name, str) or not intent_name.strip():
+    #     raise ValueError("'intent_name' missing or not a non-empty string")
+    # if not isinstance(raw_utterances, list):
+    #     raise ValueError("'utterances' missing or not a list")
+
+    seen = set()
+    utterances = []
+    for u in raw_utterances:
+        if not isinstance(u, str):
+            continue  # skip a stray non-string entry rather than crash
+        u = u.strip()
+        if u and u.lower() not in seen:  # keep non-empty, first occurrence only
+            seen.add(u.lower())
+            utterances.append(u)
+
+    if not utterances:
+        raise ValueError("No usable utterances after cleaning")
+
+    return intent_name.strip(), utterances
+
+
+def generate_new_intent(
+    dataclass,
+    escalated_utts,
+    target_intent,
+    n_utterances,
+    config,
+    samples_per_intent=8,
+):
+    """
+    Generation for one new intent, chaining the four pieces:
+
+    build_intent_context -> format_prompt -> LLM.generate -> parse_and_validate.
+
+    Returns (intent_name, utterances), ready to hand to DataClass.build_llm_new_utt.
+    Generates fresh on every call (no caching); the utterances are inspectable afterwards
+    via the Dataset.
+    """
+    context = dataclass.build_intent_context(samples_per_intent=samples_per_intent)
     prompt = format_prompt(
         context=context,
         escalated_utts=escalated_utts,
-        target_intent=TARGET_INTENT,
-        n_utterances=N_UTTERANCES,
+        target_intent=target_intent,
+        n_utterances=n_utterances,
     )
+    raw = build_llm_client(config).generate(prompt)
+    return parse_and_validate(raw)
 
-    print("SYSTEM \n", prompt["system"])
-    print("\nUSER\n", prompt["messages"][0]["content"])
 
-    llm = build_llm_client(config)
-    raw = llm.generate(prompt)
+# if __name__ == "__main__":
+#     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#     from core.configuration import load_config
+#     from core.dataloader import DataClass
 
-    print("\nRAW LLM OUTPUT (repr\n")
-    print(repr(raw))
-    print("\n readable\n")
-    print(raw)
+#     #  ['takeaway_order', 'general_joke', 'recommendation_locations', 'play_podcasts', 'transport_traffic']
+#     TARGET_INTENT = "takeaway_order"
+#     N_UTTERANCES = 10
+#     config = load_config()
+#     data = DataClass()
+#     context = data.build_intent_context()
+
+#     train_split = data.sets_names[0]
+#     seed_rows = data.dataset_totrain[train_split].filter(
+#         lambda ex: ex[data.label_col] == TARGET_INTENT
+#     )
+#     escalated_utts = [seed_rows[0]["utt"]]
+
+#     prompt = format_prompt(
+#         context=context,
+#         escalated_utts=escalated_utts,
+#         target_intent=TARGET_INTENT,
+#         n_utterances=N_UTTERANCES,
+#     )
+
+#     print("SYSTEM \n", prompt["system"])
+#     print("\nUSER\n", prompt["messages"][0]["content"])
+
+#     llm = build_llm_client(config)
+#     raw = llm.generate(prompt)
+
+#     print("\nRAW LLM OUTPUT (repr\n")
+#     print(repr(raw))
+#     print("\n readable\n")
+#     print(raw)
 
 """
  You generate synthetic training data for an on-device intent classifier used by a voice assistant.
