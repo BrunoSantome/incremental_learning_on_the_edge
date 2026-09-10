@@ -1,6 +1,7 @@
 from .utils import build_model, compute_class_weights, expand_student_head
 from .configuration import load_config, set_seed
 from .dataloader import DataClass
+from server.paraphrase import generate_new_intent
 from transformers import (
     get_linear_schedule_with_warmup,
     AutoModelForSequenceClassification,
@@ -243,7 +244,6 @@ class BaseDistillationTrainer:
         ) as f:
             json.dump(self.history, f, indent=2)
 
-        self.student_model.save_pretrained(f"{self.checkpoint_path}_last")
         wandb.finish()
 
     def _eval(self, epoch):
@@ -613,6 +613,80 @@ def run_incremental_experiment(
 def _get_incremental_version_dir(config, student_key, version):
     base = config[student_key]["distill"]["output_dir"]
     return f"{base}_v{version}"
+
+
+def run_synthetic_incremental_experiment(
+    intents_to_add,
+    student_key,
+    config,
+    K,
+    n_generate,
+    seed=42,
+    exp_name=None,
+    samples_per_intent=8,
+):
+    """
+    Synthetic counterpart of run_incremental_experiment.
+
+    For each reserve intent, the new intent's TRAINING data is LLM-generated instead of
+    real MASSIVE data; eval/test stay real. Old intents keep their real replay exemplars,
+    so the ONLY variable vs the real-data experiment is the new intent's data source —
+    a clean controlled comparison, both evaluated on the real test split.
+
+    """
+
+    distill_cfg = config[student_key]["distill"]
+    exp_id = (
+        exp_name
+        or f"SYNTH_K{K}_g{n_generate}_a{distill_cfg['alpha']}_T{distill_cfg['temperature']}_s{seed}"
+    )
+
+    # reset the registry to the 15 pretrain intents so the chain starts from V0's label space
+    registry_path = DataClass._resolve_path(config["registry_path"])
+    if os.path.exists(registry_path):
+        os.remove(registry_path)
+
+    dataclass = DataClass()
+    train_split = dataclass.sets_names[0]
+
+    for version, intent_name in enumerate(intents_to_add, start=1):
+        print(f"v{version}: generating + adding synthetic intent: {intent_name}")
+
+        # real escalated seed utterance for this intent, taken from the reserve (to-train) data
+        seed_rows = dataclass.dataset_totrain[train_split].filter(
+            lambda ex: ex[dataclass.label_col] == intent_name
+        )
+        escalated_utts = [seed_rows[0]["utt"]]
+
+        # LLM-generate the synthetic training utterances;
+        # before generating we pass the context of previously know utterances.
+
+        _, utterances = generate_new_intent(
+            dataclass=dataclass,
+            escalated_utts=escalated_utts,
+            target_intent=intent_name,  # pin the name so it matches real MASSIVE for comparison
+            n_utterances=n_generate,
+            config=config,
+            samples_per_intent=samples_per_intent,
+        )
+
+        # synthetic train + real eval/test, then the SAME incremental step as the real experiment
+        new_utt = dataclass.build_llm_new_utt(intent_name, utterances)
+        run_incremental_step(
+            dataclass,
+            intent_name,
+            student_key,
+            config,
+            version,
+            K,
+            seed,
+            new_utt=new_utt,
+            wandb_group=exp_id,
+            wandb_tags=[f"K{K}", "synthetic", f"seed{seed}", intent_name],
+        )
+
+    # return the dataclass so the same Step-6 tables (real test) can be run for comparison
+    return dataclass
 
 
 ### Main to test the class before starting the proper training on google collab.
