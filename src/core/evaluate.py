@@ -91,18 +91,35 @@ def evaluate_per_intent(
     return metrics, per_intent_f1
 
 
-def intents_report(dataclass, student_key, config, n_versions, device=None):
+def intents_report(
+    dataclass,
+    student_key,
+    config,
+    n_versions,
+    device=None,
+    test_source="pretraining",
+    n_original=15,
+):
     """
     Load each version's checkpoint (_v0.._v{n}) and score it on the TEST split
     restricted to the intents it knows.
 
     This has to be perform after training, and the dataclass must be the same object altered by training
     so the incremental intents have been added.
+
+    test_source:
+      - "pretraining": test on dataset_pretraining[test], so if it was real data or synthethic depending on function launched.
+      - "real": swap the new intents' test for real MASSIVE test (build_real_test_split), so a
+        synthetic-eval run can be re-scored on real data.
     """
 
     tokenizer = AutoTokenizer.from_pretrained(config[student_key]["name"])
     id2intent = dataclass.id2intent
     test_split = dataclass.sets_names[1]  # "test_set"
+
+    real_test_ds = (
+        dataclass.build_real_test_split(n_original) if test_source == "real" else None
+    )
 
     rows = {}  # version -> {intent_name: f1}
     metrics_by_version = {}  # version -> aggregate metrics (macro/weighted f1, acc, loss, per-language)
@@ -111,7 +128,11 @@ def intents_report(dataclass, student_key, config, n_versions, device=None):
         model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
         num_labels = model.config.num_labels  # 15 + n
         loader = dataclass.build_split_loader(
-            test_split, tokenizer, student_key, max_label=num_labels
+            test_split,
+            tokenizer,
+            student_key,
+            max_label=num_labels,
+            dataset=real_test_ds,  # None -> dataset_pretraining[test]; else the real-test set
         )
         metrics, per_intent = evaluate_per_intent(
             model, loader, device, id2intent, num_labels

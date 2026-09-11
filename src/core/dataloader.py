@@ -435,6 +435,31 @@ class DataClass:
             test_split: self._synth_dataset(intent_name, test_utts, "test"),
         }
 
+    # Function created with AI: Write build_real_test_split(self, n_original=15) on DataClass.
+    # Return a test Dataset that keeps the original intents' real test rows but replaces the new intents'
+    # rows with their real MASSIVE test data, it requires the new intent names to exactly match the ones in the real massive dataset
+    def build_real_test_split(self, n_original=15):
+        """
+        Test split where the NEW intents (index >= n_original) use their REAL MASSIVE test
+        data (from dataset_totrain), while the original intents keep their (already real)
+        test rows
+        """
+        test_split = self.sets_names[1]
+        old_rows = self.dataset_pretraining[test_split].filter(
+            lambda ex: ex[self.label_col] < n_original
+        )
+        parts = [old_rows]
+        for idx in range(n_original, self.num_labels):
+            name = self.id2intent[idx]
+            real = self.dataset_totrain[test_split].filter(
+                lambda ex, name=name: ex[self.label_col] == name  # bind name per-iter
+            )
+            real = self._relabel_to_index(
+                real, idx
+            )  # name-string -> this intent's index
+            parts.append(real)
+        return concatenate_datasets(parts)
+
     def build_intent_context(self, samples_per_intent=8, seed=42):
         """
         creates a sample of the balanced set for each known intent a set of utterances so
@@ -450,19 +475,3 @@ class DataClass:
         for ex in buffer:
             context[self.id2intent[ex[self.label_col]]].append(ex["utt"])
         return dict(context)
-
-
-# if __name__ == "__main__":
-# dc = DataClass()  # fresh, registry at 15
-# dummy = [
-#     "order takeaway for tonight",
-#     "get me food delivery",
-#     "I'd like takeout from the italian place",
-#     "deliver dinner to my address",
-#     "can you order a pizza",
-# ]
-# new_utt = dc.build_llm_new_utt("takeaway_order", dummy)
-# print(new_utt["train_set"].features == dc.dataset_totrain["train_set"].features)
-# print({k: len(v) for k, v in new_utt.items()})
-# idx = dc.admit_intent("takeaway_order", new_utt=new_utt)
-# print("admitted at", idx, "num_labels:", dc.num_labels)
