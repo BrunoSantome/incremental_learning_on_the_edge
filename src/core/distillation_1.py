@@ -689,6 +689,80 @@ def run_synthetic_incremental_experiment(
     return dataclass
 
 
+def run_production_incremental_experiment(
+    intents_to_add,
+    student_key,
+    config,
+    K,
+    n_generate,
+    seed=42,
+    exp_name=None,
+    samples_per_intent=8,
+    n_eval=20,
+    n_test=20,
+):
+    """
+    train/eval/test are all generated and split from the LLM utterances (build_synthetic_splits). Old
+    intents keep their real replay exemplars.
+
+    This is to perform the dual evaluation
+    (synthetic-test vs real-test) of one and the same model.
+
+    """
+
+    distill_cfg = config[student_key]["distill"]
+    exp_id = (
+        exp_name
+        or f"PROD_K{K}_g{n_generate}_a{distill_cfg['alpha']}_T{distill_cfg['temperature']}_s{seed}"
+    )
+
+    # reset the registry to the 15 pretrain intents so the chain starts from V0's label space
+    registry_path = DataClass._resolve_path(config["registry_path"])
+    if os.path.exists(registry_path):
+        os.remove(registry_path)
+
+    dataclass = DataClass()
+    train_split = dataclass.sets_names[0]
+
+    for version, intent_name in enumerate(intents_to_add, start=1):
+        print(f"v{version}: generating all-synthetic intent: {intent_name}")
+
+        # real escalated seed utterance for this intent, taken from the reserve (to-train) data
+        seed_rows = dataclass.dataset_totrain[train_split].filter(
+            lambda ex: ex[dataclass.label_col] == intent_name
+        )
+        escalated_utts = [seed_rows[0]["utt"]]
+
+        _, utterances = generate_new_intent(
+            dataclass=dataclass,
+            escalated_utts=escalated_utts,
+            target_intent=intent_name,  # pinned so real-test dual eval stays possible
+            n_utterances=n_generate,
+            config=config,
+            samples_per_intent=samples_per_intent,
+        )
+
+        # fully-synthetic train + eval + test, then the SAME incremental step
+        new_utt = dataclass.build_synthetic_splits(
+            intent_name, utterances, n_eval, n_test, seed
+        )
+        run_incremental_step(
+            dataclass,
+            intent_name,
+            student_key,
+            config,
+            version,
+            K,
+            seed,
+            new_utt=new_utt,
+            wandb_group=exp_id,
+            wandb_tags=[f"K{K}", "production", f"seed{seed}", intent_name],
+        )
+
+    # return the dataclass so intents_report can be run twice (synthetic test + real test)
+    return dataclass
+
+
 # Real incremental loop data evaluation 1 run. Both synthetic and real start from the same starting V0 checkpoint.
 # both use the same evaluation and test set. They only differ in the training data.
 
@@ -829,3 +903,6 @@ play_podcasts             None  NaN       NaN       NaN  0.894309  0.887097
 transport_traffic         None  NaN       NaN       NaN       NaN  0.750000
 mean_new                   NaN  0.8  0.795094  0.775592  0.825320  0.833216
 """
+
+
+# Dual evaluation on same generated training data and eval, but real vs synthetic test data.
