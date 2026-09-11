@@ -689,6 +689,143 @@ def run_synthetic_incremental_experiment(
     return dataclass
 
 
-### Main to test the class before starting the proper training on google collab.
+# Real incremental loop data evaluation 1 run. Both synthetic and real start from the same starting V0 checkpoint.
+# both use the same evaluation and test set. They only differ in the training data.
 
-# if __name__ == "__main__":
+"""
+
+                         V0        V1        V2        V3        V4        V5
+alarm_set          0.975610  0.975610  0.963855  0.963855  0.975610  0.975610
+audio_volume_down  1.000000  1.000000  1.000000  0.952381  1.000000  0.952381
+audio_volume_mute  0.939394  0.939394  0.939394  0.939394  0.937500  0.937500
+audio_volume_up    0.916667  0.869565  0.869565  0.923077  0.833333  0.846154
+datetime_query     0.960452  0.960000  0.965909  0.960000  0.971751  0.959538
+email_addcontact   0.923077  0.923077  0.923077  0.923077  0.923077  0.923077
+lists_createoradd  0.945946  0.918919  0.918919  0.933333  0.933333  0.909091
+news_query         0.964427  0.979757  0.967213  0.962656  0.949580  0.917031
+play_audiobook     0.805195  0.784810  0.756098  0.775000  0.794521  0.760563
+play_game          0.861538  0.840580  0.852941  0.882353  0.819672  0.857143
+play_music         0.928962  0.935574  0.906977  0.910145  0.905556  0.904494
+play_radio         0.936170  0.936170  0.937063  0.937063  0.921986  0.928571
+transport_query    0.907216  0.938776  0.929293  0.926316  0.929293  0.927835
+transport_taxi     1.000000  1.000000  1.000000  1.000000  1.000000  1.000000
+weather_query      0.980769  0.984127  0.974194  0.983819  0.983713  0.980519
+mean_old           0.936362  0.932424  0.926967  0.931498  0.925262  0.918634
+                            V0        V1        V2        V3        V4  \
+takeaway_order            None  0.807692  0.733333  0.862745  0.833333
+general_joke              None       NaN  0.863636  0.883721  0.926829
+recommendation_locations  None       NaN       NaN  0.784810  0.861111
+play_podcasts             None       NaN       NaN       NaN  0.816901
+transport_traffic         None       NaN       NaN       NaN       NaN
+mean_new                   NaN  0.807692  0.798485  0.843759  0.859544
+
+                                V5
+takeaway_order            0.857143
+general_joke              0.950000
+recommendation_locations  0.939394
+play_podcasts             0.842857
+transport_traffic         0.555556
+mean_new                  0.828990
+"""
+
+
+# Synthetic incremental loop evaluation on real data 3 runs
+"""
+Run 1/3 of synthetic incremental loop
+                        V0        V1        V2        V3        V4        V5
+alarm_set          0.975610  0.975610  0.987654  0.987654  0.975610  0.987654
+audio_volume_down  1.000000  1.000000  1.000000  1.000000  0.952381  1.000000
+audio_volume_mute  0.939394  0.939394  0.969697  0.939394  0.939394  0.939394
+audio_volume_up    0.916667  0.869565  0.869565  0.916667  0.880000  0.916667
+datetime_query     0.960452  0.960000  0.966292  0.960894  0.954545  0.971429
+email_addcontact   0.923077  0.923077  0.960000  0.960000  0.960000  0.960000
+lists_createoradd  0.945946  0.918919  0.945946  0.935065  0.923077  0.911392
+news_query         0.964427  0.976000  0.955466  0.959016  0.967213  0.936709
+play_audiobook     0.805195  0.815789  0.826667  0.815789  0.805195  0.784810
+play_game          0.861538  0.865672  0.878788  0.895522  0.892308  0.869565
+play_music         0.928962  0.932961  0.937500  0.929972  0.917847  0.914286
+play_radio         0.936170  0.936170  0.951049  0.919708  0.943662  0.944444
+transport_query    0.907216  0.918367  0.907216  0.926316  0.926316  0.926316
+transport_taxi     1.000000  1.000000  1.000000  0.977778  1.000000  1.000000
+weather_query      0.980769  0.983923  0.977346  0.983923  0.977346  0.977199
+mean_old           0.936362  0.934363  0.942212  0.940513  0.934326  0.935991
+                            V0       V1        V2        V3        V4  \
+takeaway_order            None  0.77193  0.897959  0.933333  0.909091
+general_joke              None      NaN  0.666667  0.716981  0.791667
+recommendation_locations  None      NaN       NaN  0.882353  0.845070
+play_podcasts             None      NaN       NaN       NaN  0.854962
+transport_traffic         None      NaN       NaN       NaN       NaN
+mean_new                   NaN  0.77193  0.782313  0.844222  0.850197
+
+                                V5
+takeaway_order            0.909091
+general_joke              0.791667
+recommendation_locations  0.882353
+play_podcasts             0.873016
+transport_traffic         0.697674
+mean_new                  0.830760
+
+"""
+# Run 2/3
+"""
+                         V0        V1        V2        V3        V4        V5
+alarm_set          0.975610  0.975610  0.987654  0.987654  0.987654  0.987654
+audio_volume_down  1.000000  1.000000  0.900000  0.900000  1.000000  1.000000
+audio_volume_mute  0.939394  0.939394  0.937500  0.939394  0.939394  0.939394
+audio_volume_up    0.916667  0.869565  0.769231  0.800000  0.960000  0.916667
+datetime_query     0.960452  0.960000  0.966292  0.960452  0.960452  0.971429
+email_addcontact   0.923077  0.923077  0.923077  0.960000  0.923077  0.923077
+lists_createoradd  0.945946  0.933333  0.921053  0.911392  0.894737  0.909091
+news_query         0.964427  0.975806  0.975610  0.971193  0.966942  0.958678
+play_audiobook     0.805195  0.805195  0.790123  0.800000  0.790123  0.767442
+play_game          0.861538  0.869565  0.869565  0.857143  0.845070  0.857143
+play_music         0.928962  0.929178  0.921739  0.934097  0.911175  0.913295
+play_radio         0.936170  0.929577  0.930556  0.929577  0.916667  0.930556
+transport_query    0.907216  0.927835  0.918367  0.937500  0.927835  0.916667
+transport_taxi     1.000000  0.978723  0.978723  0.978723  1.000000  1.000000
+weather_query      0.980769  0.977346  0.983819  0.980519  0.980519  0.980645
+mean_old           0.936362  0.932947  0.918221  0.923176  0.933576  0.931449
+                            V0        V1        V2        V3        V4  \
+takeaway_order            None  0.721311  0.846154  0.909091  0.883721
+general_joke              None       NaN  0.791667  0.775510  0.826087
+recommendation_locations  None       NaN       NaN  0.845070  0.837838
+play_podcasts             None       NaN       NaN       NaN  0.887097
+transport_traffic         None       NaN       NaN       NaN       NaN
+mean_new                   NaN  0.721311  0.818910  0.843224  0.858686
+
+                                V5
+takeaway_order            0.904762
+general_joke              0.863636
+recommendation_locations  0.898551
+play_podcasts             0.892562
+transport_traffic         0.731707
+mean_new                  0.858244
+
+"""
+# RUN 3/3
+"""
+                         V0        V1        V2        V3        V4        V5
+alarm_set          0.975610  0.975610  0.963855  0.987654  0.987654  0.975610
+audio_volume_down  1.000000  1.000000  0.952381  0.952381  0.952381  1.000000
+audio_volume_mute  0.939394  0.939394  0.923077  0.923077  0.923077  0.939394
+audio_volume_up    0.916667  0.869565  0.846154  0.800000  0.846154  0.916667
+datetime_query     0.960452  0.960000  0.965909  0.971429  0.971429  0.971098
+email_addcontact   0.923077  0.923077  0.923077  0.960000  0.923077  0.923077
+lists_createoradd  0.945946  0.933333  0.921053  0.947368  0.909091  0.897436
+news_query         0.964427  0.975806  0.954357  0.945148  0.953975  0.953975
+play_audiobook     0.805195  0.805195  0.790123  0.790123  0.771084  0.765432
+play_game          0.861538  0.869565  0.878788  0.869565  0.845070  0.845070
+play_music         0.928962  0.938202  0.917847  0.919075  0.913295  0.915942
+play_radio         0.936170  0.936170  0.913043  0.929577  0.937063  0.944444
+transport_query    0.907216  0.938776  0.929293  0.940000  0.937500  0.926316
+transport_taxi     1.000000  1.000000  1.000000  0.978723  1.000000  1.000000
+weather_query      0.980769  0.984026  0.980645  0.973856  0.980519  0.980519
+mean_old           0.936362  0.936581  0.923974  0.925865  0.923425  0.930332
+                            V0   V1        V2        V3        V4        V5
+takeaway_order            None  0.8  0.830189  0.823529  0.851064  0.869565
+general_joke              None  NaN  0.760000  0.750000  0.745098  0.826087
+recommendation_locations  None  NaN       NaN  0.753247  0.810811  0.833333
+play_podcasts             None  NaN       NaN       NaN  0.894309  0.887097
+transport_traffic         None  NaN       NaN       NaN       NaN  0.750000
+mean_new                   NaN  0.8  0.795094  0.775592  0.825320  0.833216
+"""
