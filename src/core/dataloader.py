@@ -298,14 +298,17 @@ class DataClass:
         return tok
 
     def build_split_loader(
-        self, split, tokenizer, student_key, max_label=None, keep_utt=True
+        self, split, tokenizer, student_key, max_label=None, keep_utt=True, dataset=None
     ):
         """
         DataLoader over one split of dataset_pretraining.
         Needed to obtain the single dataloder over the tokenized split, rather than a set of dataloaders.
         For incremental model evaluation.
+
+        ``dataset`` (optional) overrides dataset_pretraining[split] — used to evaluate on an
+        alternate test set (e.g. the real-test split for a synthetic-eval production run).
         """
-        ds = self.dataset_pretraining[split]
+        ds = self.dataset_pretraining[split] if dataset is None else dataset
         if max_label is not None:
             ds = ds.filter(lambda ex: ex[self.label_col] < max_label)
         tok = self._tokenize_split(ds, tokenizer, keep_utt=keep_utt)
@@ -388,6 +391,48 @@ class DataClass:
             train_split: synth_data,
             eval_split: real_eval_split,
             test_split: real_test_split,
+        }
+
+    def _synth_dataset(self, intent_name, utts, tag):
+        """Build one synthetic split"""
+        n = len(utts)
+
+        # the identifier of the synthetic utterance is changed depending on the intent_name, split, and i number for traceability
+        ds = Dataset.from_dict(
+            {
+                "id": [f"synth_{intent_name}_{tag}_{i}" for i in range(n)],
+                "utt": list(utts),
+                self.label_col: [intent_name] * n,
+                "locale": [self.languages[0]] * n,
+            }
+        )
+        return ds.cast(self.dataset_totrain[self.sets_names[0]].features)
+
+    def build_synthetic_splits(
+        self, intent_name, synthetic_utterances, n_eval, n_test, seed=42
+    ):
+        """
+        Production : Split the generated utterances
+        into synthetic train / eval / test by fixed counts
+
+        There is a fixed number for eval and test so it is similar in size to the held out
+        real dataset. Train data needs to be sufficient as well.
+
+        """
+        train_split, test_split, eval_split = self.sets_names
+
+        utts = list(synthetic_utterances)
+        rng = random.Random(seed)
+        rng.shuffle(utts)
+
+        test_utts = utts[:n_test]
+        eval_utts = utts[n_test : n_test + n_eval]
+        train_utts = utts[n_test + n_eval :]
+
+        return {
+            train_split: self._synth_dataset(intent_name, train_utts, "train"),
+            eval_split: self._synth_dataset(intent_name, eval_utts, "eval"),
+            test_split: self._synth_dataset(intent_name, test_utts, "test"),
         }
 
     def build_intent_context(self, samples_per_intent=8, seed=42):
