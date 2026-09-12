@@ -763,6 +763,76 @@ def run_production_incremental_experiment(
     return dataclass
 
 
+def run_production_step(
+    dataclass,
+    escalated_utts,
+    student_key,
+    config,
+    version,
+    K,
+    n_generate,
+    seed=42,
+    exp_name=None,
+    samples_per_intent=8,
+    n_eval=20,
+    n_test=20,
+):
+    """
+    production incremental step for ONE escalated (out-of-distribution) utterance.
+
+    - the model INVENTS the intent name
+    - train/eval/test are all synthetic (no real MASSIVE data exists for the new intent);
+
+    It does NOT reset the registry — production accumulates intents across escalations, so
+    the caller keeps the same dataclass and passes the next version each time. Requires
+    V-version-1 to exist as the teacher, and n_generate > K + n_eval + n_test.
+
+    Returns (assigned_intent_name, output_dir).
+    """
+    distill_cfg = config[student_key]["distill"]
+    exp_id = exp_name or f"PRODLIVE_v{version}_a{distill_cfg['alpha']}_s{seed}"
+
+    # generate — the model names the intent itself and produces its utterances
+    invented_name, utterances = generate_new_intent(
+        dataclass=dataclass,
+        escalated_utts=escalated_utts,
+        target_intent=None,  # production change vs the experiment above
+        n_utterances=n_generate,
+        config=config,
+        samples_per_intent=samples_per_intent,
+    )
+
+    # if the LLM named an already-known intent, it is NOT actually new: skip the whole
+    # incremental step (no admit, no head growth, no retrain, no release).
+    if invented_name in dataclass.registry:
+        print(
+            f"v{version}: LLM named it existing intent '{invented_name}' -> skipping (no retrain)"
+        )
+        return None, None
+
+    intent_name = invented_name
+    print(f"v{version}: production intent '{intent_name}'")
+
+    # all-synthetic splits call
+    new_utt = dataclass.build_synthetic_splits(
+        intent_name, utterances, n_eval, n_test, seed
+    )
+    # incremental step
+    output_dir = run_incremental_step(
+        dataclass,
+        intent_name,
+        student_key,
+        config,
+        version,
+        K,
+        seed,
+        new_utt=new_utt,
+        wandb_group=exp_id,
+        wandb_tags=[f"K{K}", "production_live", f"seed{seed}", intent_name],
+    )
+    return intent_name, output_dir
+
+
 # Real incremental loop data evaluation 1 run. Both synthetic and real start from the same starting V0 checkpoint.
 # both use the same evaluation and test set. They only differ in the training data.
 
