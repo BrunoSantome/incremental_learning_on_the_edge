@@ -1,0 +1,15 @@
+torch
+transformers>=4.48,<5
+huggingface_hub>=0.34,<1
+datasets<3.0.0
+sentencepiece
+scikit-learn
+numpy
+pandas
+pyyaml
+tqdm
+wandb
+anthropic
+python-dotenv
+matplotlib
+seaborn
