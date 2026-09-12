@@ -835,6 +835,8 @@ def run_production_step(
 
 # Real incremental loop data evaluation 1 run. Both synthetic and real start from the same starting V0 checkpoint.
 # both use the same evaluation and test set. They only differ in the training data.
+# We used real data for train/eval/test to fine-tune the model
+# real-data incremental experiment at alpha=0.2 — the baseline
 
 """
 
@@ -874,6 +876,8 @@ mean_new                  0.828990
 
 
 # Synthetic incremental loop evaluation on real data 3 runs
+# 3 different runs with 3 different generetation of data by the LLM to perform a mean between the 3 runs
+# since the data is not static.
 """
 Run 1/3 of synthetic incremental loop
                         V0        V1        V2        V3        V4        V5
@@ -976,3 +980,62 @@ mean_new                   NaN  0.8  0.795094  0.775592  0.825320  0.833216
 
 
 # Dual evaluation on same generated training data and eval, but real vs synthetic test data.
+# to assess the difference between testing on synthetic vs real data and the consequences
+
+"""                      V0        V1        V2        V3        V4        V5
+alarm_set          0.975610  0.975610  0.962963  0.950000  0.962963  0.950000
+audio_volume_down  1.000000  0.952381  1.000000  1.000000  1.000000  1.000000
+audio_volume_mute  0.939394  0.939394  0.968750  0.953846  0.939394  0.953846
+audio_volume_up    0.916667  0.880000  0.916667  0.916667  0.916667  0.869565
+datetime_query     0.960452  0.954545  0.960000  0.954545  0.960000  0.965517
+email_addcontact   0.923077  0.923077  0.960000  0.960000  0.960000  0.960000
+lists_createoradd  0.945946  0.918919  0.935065  0.935065  0.935065  0.947368
+news_query         0.964427  0.976000  0.971429  0.967213  0.966942  0.953975
+play_audiobook     0.805195  0.815789  0.790123  0.800000  0.800000  0.800000
+play_game          0.861538  0.875000  0.857143  0.845070  0.833333  0.857143
+play_music         0.928962  0.933702  0.906433  0.902655  0.910714  0.897590
+play_radio         0.936170  0.936170  0.937063  0.944444  0.944444  0.937931
+transport_query    0.907216  0.916667  0.929293  0.891304  0.916667  0.893617
+transport_taxi     1.000000  1.000000  1.000000  1.000000  1.000000  0.978723
+weather_query      0.980769  0.987179  0.977346  0.970492  0.980519  0.973856
+mean_old           0.936362  0.932296  0.938152  0.932753  0.935114  0.929276
+
+"""
+# Synthetic test set
+
+"""
+                            V0        V1        V2        V3        V4  \
+takeaway_order            None  0.784314  0.769231  0.833333  0.869565   
+general_joke              None       NaN  0.754717  0.689655  0.769231   
+recommendation_locations  None       NaN       NaN  0.769231  0.851064   
+play_podcasts             None       NaN       NaN       NaN  0.816327   
+transport_traffic         None       NaN       NaN       NaN       NaN   
+mean_new                   NaN  0.784314  0.761974  0.764073  0.826547   
+
+                                V5  
+takeaway_order            0.816327  
+general_joke              0.800000  
+recommendation_locations  0.851064  
+play_podcasts             0.769231  
+transport_traffic         0.730769  
+mean_new                  0.793478  
+"""
+# Real test set
+
+"""
+                            V0        V1        V2        V3        V4  \
+takeaway_order            None  0.754717  0.763636  0.800000  0.808511   
+general_joke              None       NaN  0.745098  0.678571  0.760000   
+recommendation_locations  None       NaN       NaN  0.800000  0.840580   
+play_podcasts             None       NaN       NaN       NaN  0.859375   
+transport_traffic         None       NaN       NaN       NaN       NaN   
+mean_new                   NaN  0.754717  0.754367  0.759524  0.817116   
+
+                                V5  
+takeaway_order            0.760000  
+general_joke              0.791667  
+recommendation_locations  0.840580  
+play_podcasts             0.839695  
+transport_traffic         0.651163  
+mean_new                  0.776621  
+"""
