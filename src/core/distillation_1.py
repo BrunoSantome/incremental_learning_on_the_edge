@@ -1039,3 +1039,33 @@ play_podcasts             0.839695
 transport_traffic         0.651163  
 mean_new                  0.776621  
 """
+
+# Successful run of a production incremental step  on new intent, only a single incremental step version,
+# utterance escalated: ['could you open the window of the front of the car']
+# LLM response was: intent name: car_window_control
+
+"""
+Evaluation results on synthetic test set: 
+
+V1: has 16 intents on the test split
+                         V0        V1
+alarm_set          0.975610  0.975610
+audio_volume_down  1.000000  0.952381
+audio_volume_mute  0.939394  0.953846
+audio_volume_up    0.916667  0.800000   #worth seeing that the control of the volumne decreased matching the new control fo the window
+datetime_query     0.960452  0.955056
+email_addcontact   0.923077  0.923077
+lists_createoradd  0.945946  0.947368
+news_query         0.964427  0.968000
+play_audiobook     0.805195  0.800000
+play_game          0.861538  0.882353
+play_music         0.928962  0.937500
+play_radio         0.936170  0.930556
+transport_query    0.907216  0.905263
+transport_taxi     1.000000  1.000000
+weather_query      0.980769  0.980645
+mean_old           0.936362  0.927444
+                      V0   V1
+car_window_control  None  0.8
+mean_new             NaN  0.8
+"""
