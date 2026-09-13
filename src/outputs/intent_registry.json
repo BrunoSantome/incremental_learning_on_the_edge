@@ -1,0 +1,20 @@
+{
+  "intent2id": {
+    "alarm_set": 0,
+    "audio_volume_down": 1,
+    "audio_volume_mute": 2,
+    "audio_volume_up": 3,
+    "datetime_query": 4,
+    "email_addcontact": 5,
+    "lists_createoradd": 6,
+    "news_query": 7,
+    "play_audiobook": 8,
+    "play_game": 9,
+    "play_music": 10,
+    "play_radio": 11,
+    "transport_query": 12,
+    "transport_taxi": 13,
+    "weather_query": 14,
+    "car_window_control": 15 
+  }
+}

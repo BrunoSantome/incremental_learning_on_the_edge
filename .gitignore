@@ -1,3 +1,5 @@
 .vscode
 .venv
 .env
+src/outputs/checkpoints
+src/mailbox/releases

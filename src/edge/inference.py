@@ -4,6 +4,8 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 def load_edge_model(checkpoint_dir, tokenizer_name, device="cpu"):
     # Function that loads the model and the tokenizer in the edge device
+    # TODO: Tokenizer is loaded from the cloud, external dependency important to change it so it is local
+    # TODO: Save the tokenizer along the checkpoint when re-training in the server, and load it from the directory here. 
     model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir)
     model.to(device)
     model.eval()  # inference mode: disables dropout, deterministic outputs
