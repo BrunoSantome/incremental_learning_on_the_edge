@@ -14,13 +14,15 @@ from core.configuration import load_config
 from edge.inference import load_edge_model, predict
 from edge.ood import is_ood
 from shared.mailbox import send_escalation, read_escalations, publish_release, poll_release
+from dotenv import load_dotenv
 
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(os.path.dirname(SRC_DIR), ".env")) 
 
 
 def _checkpoint_dir(config, student_key, version):
     base = os.path.join(SRC_DIR, config[student_key]["distill"]["output_dir"])
-    return f"{base}_v{version}" #using specific naming convention
+    return f"{base}_v{version}" #using specific naming convention for mailbox
 
 
 def _registry_id2name(config):
@@ -32,7 +34,6 @@ def _registry_id2name(config):
 
 def _v0_labels(config, n_pretrain=15):
     return {idx: name for idx, name in _registry_id2name(config).items() if idx < n_pretrain}
-
 
 
 def run_edge_simulation_test():
@@ -67,7 +68,7 @@ def run_edge_simulation_test():
     print("edge device OOD: escalating")
     send_escalation(utterance, edge_version)
 
-    # ----Server simulation Server simulation without calling it ----
+    # ---- Server simulation without calling it ----
     # it reads it but does not call the LLM nor the re-training happens
     read_escalations()  # consume the pending escalation (mailbox contract); content unused by the stub
     v1_labels = _registry_id2name(config)  # we load the 16 registrys
@@ -91,8 +92,75 @@ def run_edge_simulation_test():
     print(f"[edge v{edge_version}] predicted '{name}' (confidence {confidence:.2f})")
 
 
+def run_production_iteration_simulation_test():
+    """
+    This run experiment aims to simulate the behaviour of the whole system end to end. 
+    Merging the edge device logic and the server side logic together with the logical mailbox conector.
+    On new utterances, that derive in new intents. 
+
+    This function only runs a single iteration end-to-end of an incremental step with edge and server. 
+    The objective is to re-use the same utterance "could you open the window of the front of the car" 
+    so it is a more controlled test, and can be compared to the results got previously on the server side production test
+
+    This is not the real production mechanism. 
+
+    TODO: Still the ood is bad. 
+    """
+    config = load_config()
+    student_key = "student1"
+    tokenizer_name = config[student_key]["name"]
+    utterance = "could you open the window of the front of the car" # same utterance used in the server to generate the new model
+    print(utterance)
+
+    # ---- edge device ----
+
+    v0_labels = _v0_labels(config)
+    edge_version = 0
+    model, tokenizer = load_edge_model(_checkpoint_dir(config, student_key, edge_version), tokenizer_name)
+
+    name, confidence, probs = predict(model, tokenizer, v0_labels, utterance)
+    print(f"[edge v{edge_version}] predicted: '{name}' with (confidence {confidence:.2f})")
+
+    if not is_ood(probs):
+        print("the edge device did not flagged as OOD: stopping (nothing to escalate)")
+        return
+
+    print("edge device OOD: escalating")
+    send_escalation(utterance, edge_version)
+
+    # ---- server: REAL production step LLM generatpuion + retrain ----
+    from core.dataloader import DataClass
+    from core.distillation_1 import run_production_step
+
+    registry_path = os.path.join(SRC_DIR, config["registry_path"])
+    if os.path.exists(registry_path):
+        os.remove(registry_path)  # reset to 15 pretrain-only so DataClass() matches V0's head
+
+    dataclass = DataClass()
+    version = 1
+    esc = read_escalations()[0]  # exactly one
+    name, output_dir = run_production_step(dataclass, [esc["utterance"]], student_key, config, version, K=70, n_generate=130)
+    if name is None:
+        print("LLM named an existing intent: skipping, no new model")
+        return
+    publish_release(version, output_dir, dataclass.id2intent)
+    print(f"server published v{version} ({name})")
+
+    # ---- Edge devive ---- 
+
+    release = poll_release(edge_version)
+    edge_version = release["version"]
+    model, tokenizer = load_edge_model(release["checkpoint_dir"], tokenizer_name)
+    labels = {int(k): v for k, v in release["labels"].items()}  # JSON round trip -> string keys
+
+    utterance2="could you close the rear-window please"
+    print(utterance2)
+    name, confidence, probs = predict(model, tokenizer, labels, utterance2)
+    print(f"[edge v{edge_version}] predicted '{name}' (confidence {confidence:.2f})")
+
+
 if __name__ == "__main__":
-    run_edge_simulation_test()
+    # run_edge_simulation_test()
 
     """
     Results, the ood mechanism is not working properly, very simple it classifies it as weather_query with a confidence of 0.88
@@ -114,7 +182,7 @@ if __name__ == "__main__":
     could you close the rear-window please
     [edge v1] predicted 'car_window_control' (confidence 1.00)
 
-
-    
-    
     """
+
+    run_production_iteration_simulation_test()
+    # Need to run in collab due to lack of GPU in this computer

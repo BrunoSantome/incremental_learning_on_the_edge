@@ -55,7 +55,7 @@ class DataClass:
         """
         train_df, eval_df, test_df = [], [], []
         for lan in self.languages:
-            ds = load_dataset(self.dataset_name, lan)  # trust_remote_code=True
+            ds = load_dataset(self.dataset_name, lan, trust_remote_code=True)
             train_df.append(
                 ds[constants.TRAIN].select_columns(self.dataset_col_selected)
             )
