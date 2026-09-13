@@ -15,6 +15,6 @@
     "transport_query": 12,
     "transport_taxi": 13,
     "weather_query": 14,
-    "car_window_control": 15 
+    "car_window_control": 15
   }
 }

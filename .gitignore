@@ -3,3 +3,8 @@
 .env
 src/outputs/checkpoints
 src/mailbox/releases
+src/core/__pycache__
+src/server/__pycache__
+src/shared/__pycache__
+src/edge/__pycache__
+wandb
