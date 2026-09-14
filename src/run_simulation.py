@@ -9,11 +9,26 @@
 
 import os
 import json
+import shutil
 
 from core.configuration import load_config
+from core.dataloader import DataClass
+from core.distillation_1 import run_production_step
+from core.evaluate import (
+    intents_report,
+    old_intent_persistance_table,
+    new_intent_acquisition_table,
+)
 from edge.inference import load_edge_model, predict
 from edge.ood import is_ood
-from shared.mailbox import send_escalation, read_escalations, publish_release, poll_release
+from shared.mailbox import (
+    send_escalation,
+    read_escalations,
+    publish_release,
+    poll_release,
+    ESCALATIONS,
+    RELEASES,
+)
 from dotenv import load_dotenv
 
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +49,18 @@ def _registry_id2name(config):
 
 def _v0_labels(config, n_pretrain=15):
     return {idx: name for idx, name in _registry_id2name(config).items() if idx < n_pretrain}
+
+def _clear_registry_and_mailbox(config):
+    # registry back to the 15 pretrain intents (DataClass rebuilds it) so it matches V0's head,
+    # and an empty mailbox so no leftover escalation is read.
+    registry_path = os.path.join(SRC_DIR, config["registry_path"])
+    if os.path.exists(registry_path):
+        os.remove(registry_path)
+
+    for mailbox_dir in (ESCALATIONS, RELEASES):
+        if os.path.exists(mailbox_dir):
+            shutil.rmtree(mailbox_dir)
+
 
 
 def run_edge_simulation_test():
@@ -129,9 +156,6 @@ def run_production_iteration_simulation_test():
     send_escalation(utterance, edge_version)
 
     # ---- server: REAL production step LLM generatpuion + retrain ----
-    from core.dataloader import DataClass
-    from core.distillation_1 import run_production_step
-
     registry_path = os.path.join(SRC_DIR, config["registry_path"])
     if os.path.exists(registry_path):
         os.remove(registry_path)  # reset to 15 pretrain-only so DataClass() matches V0's head
@@ -159,6 +183,80 @@ def run_production_iteration_simulation_test():
     print(f"[edge v{edge_version}] predicted '{name}' (confidence {confidence:.2f})")
 
 
+def run_interactive_simulation():
+    """
+    Final interactive end-to-end simulation of the system. Type an utterance in the terminal, if unknown it will be escalated
+    , server generates data and retrains a new version, evaluates it, the edge "device" updates and predicts again.
+    Intents accumulate across iterations (V1, V2, ...)
+
+    The _v1+ checkpoints are not deleted: reset them manually before each run
+
+    TODO: save the data of each iteration for in-depth analysis
+    TODO: save/reset the state automatically instead of manually 
+    TODO: save tokenizer into the checkpoint to not have cloud dependency on the edge model
+    TODO: check if returning data for in-depth analysis rather than saving it every run
+    """
+
+    config = load_config()
+    student_key = "student1"
+    tokenizer_name = config[student_key]["name"]
+
+    _clear_registry_and_mailbox(config)
+    dataclass = DataClass()  # rebuilds the registry at the 15 pretrain intents
+    version = 1
+    edge_version = 0
+    edge_labels = _v0_labels(config)
+    model, tokenizer = load_edge_model(_checkpoint_dir(config, student_key, 0), tokenizer_name)
+
+    while True:
+        try:
+            utterance = input("\nutterance (exit/quit to stop)> ").strip()
+        except EOFError:  # stdin closed
+            break
+        if utterance.lower() in ("exit", "quit"):
+            break
+        if not utterance:
+            continue
+
+        # edge: inference + OOD 
+        name, confidence, probs = predict(model, tokenizer, edge_labels, utterance)
+        print(f"[edge v{edge_version}] predicted '{name}' (confidence {confidence:.2f})")
+        if not is_ood(probs):
+            continue
+
+        print("[edge] OOD: escalating")
+        send_escalation(utterance, edge_version)
+
+        # server: generation + retrain
+        esc = read_escalations()[0]  # exactly one
+        intent_name, output_dir = run_production_step(
+            dataclass, [esc["utterance"]], student_key, config, version, K=70, n_generate=130
+        )
+        if intent_name is None:
+            print("server LLM named an existing intent: skipped")
+            continue
+
+        # server: cumulative evaluation V0..Vn
+        rows, _ = intents_report(dataclass, student_key, config, n_versions=version)
+        print(f"\nretention (old intents)\n{old_intent_persistance_table(rows, dataclass.id2intent)}")
+        print(f"\nacquisition (new intents)\n{new_intent_acquisition_table(rows, dataclass.id2intent)}")
+
+        publish_release(version, output_dir, dataclass.id2intent)
+        print(f"server published v{version} ({intent_name})")
+
+        # edge: update + re-predict the same utterance
+
+        release = poll_release(edge_version)
+        edge_version = release["version"]
+        model, tokenizer = load_edge_model(release["checkpoint_dir"], tokenizer_name)
+        edge_labels = {int(k): v for k, v in release["labels"].items()}  # JSON -> str keys
+
+        name, confidence, probs = predict(model, tokenizer, edge_labels, utterance)
+        print(f"[edge v{edge_version}] now predicts '{name}' (confidence {confidence:.2f})")
+        version += 1
+
+
+
 if __name__ == "__main__":
     # run_edge_simulation_test()
 
@@ -184,5 +282,7 @@ if __name__ == "__main__":
 
     """
 
-    run_production_iteration_simulation_test()
-    # Need to run in collab due to lack of GPU in this computer
+    # run_production_iteration_simulation_test()
+    # run_interactive_simulation()
+    # Need to run in collab due to lack of GPU in this computerç
+    run_interactive_simulation()
