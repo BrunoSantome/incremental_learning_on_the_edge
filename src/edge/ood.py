@@ -27,3 +27,23 @@ def msp_score(logits):
     return np.exp(
         np.max(x, axis=-1) - _logsumexp(x)
     )  # max softmax = exp(max logit - logsumexp)
+
+
+def energy_score(logits, T=1.0):
+    # Energy (Liu et al., 2020): negative free energy T * logsumexp(logits / T)
+    # T > 1 smooths the logits, it can help the distilled student (trained with soft targets)
+    # following paper Classical Out-of-Distribution Detection Methods Benchmark in Text Classification Tasks
+    x = np.asarray(logits, dtype=np.float64)
+    return T * _logsumexp(x / T)
+
+
+def calibrate_threshold(scores, keep=0.95):
+    # threshold from known-intent scores only (eval split), set to 95 by default
+    # example: 95% of known utterances pass and 5% get escalated.
+    # this is thought to include the energy score since it isnt between 1 and 0.
+    return float(np.percentile(np.asarray(scores, dtype=np.float64), (1 - keep) * 100))
+
+
+def is_ood_score(score, threshold):
+    # same as is_ood but for any score
+    return score < threshold
