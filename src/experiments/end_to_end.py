@@ -19,8 +19,8 @@ from core.evaluate import (
     old_intent_persistance_table,
     new_intent_acquisition_table,
 )
-from edge.inference import load_edge_model, predict
-from edge.ood import is_ood
+from edge.inference import load_edge_model, predict, get_logits
+from edge.ood import is_ood, energy_score, calibrate_threshold
 from shared.mailbox import (
     send_escalation,
     read_escalations,
@@ -55,6 +55,22 @@ def _v0_labels(config, n_pretrain=15):
     return {
         idx: name for idx, name in _registry_id2name(config).items() if idx < n_pretrain
     }
+
+
+def _calibrate_threshold(model, tokenizer, dataclass, config):
+    """
+    Server side: the OOD threshold of the version just trained, from its own known-intent eval
+    split only (no OOD data, as on a deployed device). Recomputed at every version because each
+    retrained head shifts the Energy scale, and shipped with the release.
+
+    From V1 on, the eval rows of the intents learned in production are LLM-generated, so the
+    threshold is partly calibrated on synthetic utterances.
+    """
+    eval_split = dataclass.sets_names[2]  # "eval_set"
+    utterances = dataclass.dataset_pretraining[eval_split]["utt"]
+    logits = get_logits(model, tokenizer, utterances)
+    scores = energy_score(logits, T=config["ood"]["T"])
+    return calibrate_threshold(scores, keep=config["ood"]["keep"])
 
 
 def _clear_registry_and_mailbox(config):

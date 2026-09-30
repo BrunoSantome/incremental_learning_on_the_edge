@@ -39,6 +39,15 @@ dataset:
   reserve_intents: [25, 31, 32, 47, 48]
 
 
+# unknown-intent detection on the edge (src/edge/ood.py).
+# T: Energy temperature, T=2 caught the most far-OOD in the benchmark (src/experiments/ood_benchmark.py)
+# keep: share of known-intent utterances that must stay on the device; the threshold is the
+# (1-keep) percentile of their Energy scores, recomputed by the server after every retraining.
+ood:
+  T: 2.0
+  keep: 0.95
+
+
 # LLM used by the server to generate synthetic utterances for a new intent (src/server/paraphrase.py)
 llm:
   provider: "anthropic"
