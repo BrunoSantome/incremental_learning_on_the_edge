@@ -143,10 +143,10 @@ def parse_and_validate(raw_text):
     intent_name = data.get("intent_name")
     raw_utterances = data.get("utterances")
 
-    # if not isinstance(intent_name, str) or not intent_name.strip():
-    #     raise ValueError("'intent_name' missing or not a non-empty string")
-    # if not isinstance(raw_utterances, list):
-    #     raise ValueError("'utterances' missing or not a list")
+    if not isinstance(intent_name, str) or not intent_name.strip():
+        raise ValueError("'intent_name' missing or not a non-empty string")
+    if not isinstance(raw_utterances, list):
+        raise ValueError("'utterances' missing or not a list")
 
     seen = set()
     utterances = []
