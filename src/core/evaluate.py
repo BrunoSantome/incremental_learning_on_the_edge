@@ -99,6 +99,7 @@ def intents_report(
     device=None,
     test_source="pretraining",
     n_original=15,
+    checkpoint_dir=None,
 ):
     """
     Load each version's checkpoint (_v0.._v{n}) and score it on the TEST split
@@ -111,6 +112,10 @@ def intents_report(
       - "pretraining": test on dataset_pretraining[test], so if it was real data or synthethic depending on function launched.
       - "real": swap the new intents' test for real MASSIVE test (build_real_test_split), so a
         synthetic-eval run can be re-scored on real data.
+
+    checkpoint_dir: optional callable version -> path, for runs that do not use the default
+      _v{n} naming (the ablation conditions, each stored under its own run_id). V0 is shared by
+      every condition, so the callable is expected to return the shared V0 path for n = 0.
     """
 
     tokenizer = AutoTokenizer.from_pretrained(config[student_key]["name"])
@@ -124,7 +129,11 @@ def intents_report(
     rows = {}  # version -> {intent_name: f1}
     metrics_by_version = {}  # version -> aggregate metrics (macro/weighted f1, acc, loss, per-language)
     for n in range(n_versions + 1):  # V0 .. Vn
-        checkpoint = _get_incremental_version_dir(config, student_key, n)
+        checkpoint = (
+            checkpoint_dir(n)
+            if checkpoint_dir is not None
+            else _get_incremental_version_dir(config, student_key, n)
+        )
         model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
         num_labels = model.config.num_labels  # 15 + n
         loader = dataclass.build_split_loader(

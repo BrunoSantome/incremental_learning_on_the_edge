@@ -48,6 +48,10 @@ def distillation_loss(
     the teacher only covers the n_old classes.
     """
 
+    if alpha == 0 or teacher_logits is None:
+        # ablation: distillation switched off, only the supervised term remains
+        return F.cross_entropy(student_logits.float(), labels, weight=class_weights)
+
     if n_old is None:
         kd_student_logits = student_logits  # Using the whole Head
     else:
@@ -109,6 +113,7 @@ class BaseDistillationTrainer:
         wandb_group=None,  # wandb group = experiment id for a chain of V1,...Vn runs
         wandb_tags=None,  # wandb tags for filtering
         id2intent=None,  # {index: name}
+        alpha=None,  # overrides distill_cfg["alpha"]; alpha=0 switches distillation off (ablation)
     ):
         set_seed(seed)  # reproducibility
         self.student_model = student_model
@@ -145,7 +150,7 @@ class BaseDistillationTrainer:
             self.train_dataloader, self.num_labels, weight_scheme, self.device
         )  # this calculates the class weights for an imbalanced dataset.
         self.T = distill_cfg["temperature"]
-        self.alpha = distill_cfg["alpha"]
+        self.alpha = distill_cfg["alpha"] if alpha is None else alpha
         self.optimizer = torch.optim.AdamW(
             self.student_model.parameters(),
             lr=config[self.student_name]["lr"],
@@ -441,17 +446,20 @@ class IncrementalDistiller(BaseDistillationTrainer):
             self.optimizer.zero_grad()
             with torch.amp.autocast(device_type=self.device.type):
                 # Forward pass of teacher for soft logits distribution
-                with torch.no_grad():
-                    teacher_outputs = self.teacher_model(
-                        input_ids=student_batch["input_ids"],
-                        attention_mask=student_batch["attention_mask"],
-                    )
+                # (skipped when alpha = 0, so the no-KD ablation is not charged for it)
+                teacher_logits = None
+                if self.alpha > 0:
+                    with torch.no_grad():
+                        teacher_logits = self.teacher_model(
+                            input_ids=student_batch["input_ids"],
+                            attention_mask=student_batch["attention_mask"],
+                        ).logits
                 # Forward pass of student model for student softmax logits
                 student_outputs = self.student_model(**student_batch)
                 # loss = outputs.loss
                 loss = distillation_loss(
                     student_outputs.logits,
-                    teacher_outputs.logits,
+                    teacher_logits,
                     student_batch["labels"],
                     self.T,
                     self.alpha,
@@ -513,6 +521,10 @@ def run_incremental_step(
     new_utt=None,
     wandb_group=None,
     wandb_tags=None,
+    use_kd=True,
+    use_replay=True,
+    previous_dir=None,
+    output_dir=None,
 ):
     """
     Method that performs a single incremental step of the model with a new intent.
@@ -520,12 +532,18 @@ def run_incremental_step(
     - it grows the head of the model with the frozen old teacher weights + randomly initializing the new class
     - It creates the balanced set of data with the new utterances and new intent to pass on to the trainer
     - It trains the new model
+
+    Ablation switches (default = the adopted method):
+      use_kd=False     -> alpha = 0, no distillation term and no teacher forward pass
+      use_replay=False -> the train split is the new intent only, no buffer of known intents
+    previous_dir / output_dir override the default _v{n} paths, so several conditions can be
+    trained from the same V0 without overwriting each other.
     """
     set_seed(seed)
-    previous_chkpt = _get_incremental_version_dir(
+    previous_chkpt = previous_dir or _get_incremental_version_dir(
         config, student_key, version - 1
     )  # teacher model directory
-    output_directory = _get_incremental_version_dir(
+    output_directory = output_dir or _get_incremental_version_dir(
         config, student_key, version
     )  # where the new model will be stored
 
@@ -544,9 +562,15 @@ def run_incremental_step(
     # Once we have the student_model with the old weights frozen and the new one initialized
     # we need the dataloader sets that are going to be using for the incremental training.
 
-    dataloader = dataclass.build_incremental_dataloaders(
-        student_key, tokenizer, K, seed
-    )  # this is the balanced replay buffer
+    if use_replay:
+        dataloader = dataclass.build_incremental_dataloaders(
+            student_key, tokenizer, K, seed
+        )  # this is the balanced replay buffer
+    else:
+        # naive fine-tuning baseline: train on the new intent alone, no buffer of known intents
+        dataloader = dataclass.build_new_intent_dataloaders(
+            student_key, tokenizer, new_intent_name
+        )
 
     trainer = IncrementalDistiller(
         student_model=student_model,
@@ -561,6 +585,7 @@ def run_incremental_step(
         wandb_group=wandb_group,
         wandb_tags=wandb_tags,
         id2intent=dataclass.id2intent,  # per-intent eval F1 logging
+        alpha=None if use_kd else 0.0,  # 0 switches the distillation term off
     )
     trainer.train()
     return output_directory

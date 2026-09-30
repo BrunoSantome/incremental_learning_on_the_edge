@@ -347,6 +347,28 @@ class DataClass:
         tokenized = self.fit_tokenizer(incremental, tokenizer, keep_utt=True)
         return self.feed_dataloader(tokenized, student_key)
 
+    def build_new_intent_dataloaders(self, student_key, tokenizer, new_intent_name):
+        """
+        Counterpart of build_incremental_dataloaders without the replay buffer: the train split
+        holds only the new intent's utterances (naive fine-tuning baseline of the ablation).
+        Eval and test stay the full splits, so every condition is selected and scored on exactly
+        the same data.
+        """
+        train_split, test_split, eval_split = self.sets_names
+        new_idx = self.registry[new_intent_name]
+
+        new_only = DatasetDict(
+            {
+                train_split: self.dataset_pretraining[train_split].filter(
+                    lambda ex: ex[self.label_col] == new_idx
+                ),
+                test_split: self.dataset_pretraining[test_split],
+                eval_split: self.dataset_pretraining[eval_split],
+            }
+        )
+        tokenized = self.fit_tokenizer(new_only, tokenizer, keep_utt=True)
+        return self.feed_dataloader(tokenized, student_key)
+
     def build_llm_new_utt(self, intent_name, synthetic_utterances):
         """
         This is another experiment through the pipeline, we are using synthetic utterances for the training
