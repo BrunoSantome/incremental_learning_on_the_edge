@@ -48,11 +48,15 @@ def read_escalations():
     return escalations
 
 
-def publish_release(version, checkpoint_dir, labels):
+def publish_release(version, checkpoint_dir, labels, threshold=None):
     """
     Server copies the trained checkpoint into releases/v{version}/ and writes
     releases/latest.json (the pointer the edge polls). labels is the index->name map,
     shipped here so the edge never has to import the registry.
+
+    threshold: the OOD threshold calibrated for THIS version. It travels with the model because
+    it is only valid for this head: the edge has no eval data to compute it itself. None keeps
+    the older behaviour (the edge then falls back to its own default rule).
     """
     _ensure_dirs()
     dest = os.path.join(RELEASES, f"v{version}")
@@ -61,7 +65,15 @@ def publish_release(version, checkpoint_dir, labels):
     shutil.copytree(checkpoint_dir, dest)
     latest_path = os.path.join(RELEASES, "latest.json")
     with open(latest_path, "w") as f:
-        json.dump({"version": version, "checkpoint_dir": dest, "labels": labels}, f)
+        json.dump(
+            {
+                "version": version,
+                "checkpoint_dir": dest,
+                "labels": labels,
+                "threshold": threshold,
+            },
+            f,
+        )
 
 
 def poll_release(current_version):

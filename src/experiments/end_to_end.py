@@ -20,7 +20,7 @@ from core.evaluate import (
     new_intent_acquisition_table,
 )
 from edge.inference import load_edge_model, predict, get_logits
-from edge.ood import is_ood, energy_score, calibrate_threshold
+from edge.ood import is_ood, energy_score, calibrate_threshold, is_ood_score
 from shared.mailbox import (
     send_escalation,
     read_escalations,
@@ -233,6 +233,10 @@ def run_interactive_simulation():
     , server generates data and retrains a new version, evaluates it, the edge "device" updates and predicts again.
     Intents accumulate across iterations (V1, V2, ...)
 
+    Detection uses the Energy score against the threshold calibrated for the running version:
+    V0's is computed here at start-up, and every later one by the server after retraining, then
+    shipped with the release (the edge has no eval data to compute it itself).
+
     The _v1+ checkpoints are not deleted: reset them manually before each run
 
     TODO: save the data of each iteration for in-depth analysis
@@ -254,6 +258,15 @@ def run_interactive_simulation():
         _checkpoint_dir(config, student_key, 0), tokenizer_name
     )
 
+    # V0's threshold: same procedure the server repeats after every retraining, and the same
+    # number the offline benchmark reports for V0 (consistency check).
+    T = config["ood"]["T"]
+    edge_threshold = _calibrate_threshold(model, tokenizer, dataclass, config)
+    print(
+        f"[edge v0] Energy T={T} threshold {edge_threshold:.4f}"
+        f" (keeps {config['ood']['keep']:.0%} of known-intent utterances on the device)"
+    )
+
     while True:
         try:
             utterance = input("\nutterance (exit/quit to stop)> ").strip()
@@ -264,12 +277,16 @@ def run_interactive_simulation():
         if not utterance:
             continue
 
-        # edge: inference + OOD
-        name, confidence, probs = predict(model, tokenizer, edge_labels, utterance)
-        print(
-            f"[edge v{edge_version}] predicted '{name}' (confidence {confidence:.2f})"
+        # edge: inference + OOD (Energy score against the threshold shipped with this version)
+        name, confidence, probs, logits = predict(
+            model, tokenizer, edge_labels, utterance, return_logits=True
         )
-        if not is_ood(probs):
+        score = energy_score(logits, T=T)
+        print(
+            f"[edge v{edge_version}] predicted '{name}' (confidence {confidence:.2f},"
+            f" energy {score:.4f} vs threshold {edge_threshold:.4f})"
+        )
+        if not is_ood_score(score, edge_threshold):
             continue
 
         print("[edge] OOD: escalating")
@@ -299,7 +316,17 @@ def run_interactive_simulation():
             f"\nacquisition (new intents)\n{new_intent_acquisition_table(rows, dataclass.id2intent)}"
         )
 
-        publish_release(version, output_dir, dataclass.id2intent)
+        # server: recalibrate the threshold for the version just trained (the new head shifts the
+        # Energy scale, so V(n-1)'s threshold no longer keeps the intended share of known intents)
+        new_model, new_tokenizer = load_edge_model(output_dir, tokenizer_name)
+        new_threshold = _calibrate_threshold(
+            new_model, new_tokenizer, dataclass, config
+        )
+        print(f"server calibrated v{version} threshold: {new_threshold:.4f}")
+
+        publish_release(
+            version, output_dir, dataclass.id2intent, threshold=new_threshold
+        )
         print(f"server published v{version} ({intent_name})")
 
         # edge: update + re-predict the same utterance
@@ -310,10 +337,15 @@ def run_interactive_simulation():
         edge_labels = {
             int(k): v for k, v in release["labels"].items()
         }  # JSON -> str keys
+        edge_threshold = ["threshold"]  # shipped with the model it belongs to
 
-        name, confidence, probs = predict(model, tokenizer, edge_labels, utterance)
+        name, confidence, probs, logits = predict(
+            model, tokenizer, edge_labels, utterance, return_logits=True
+        )
+        score = energy_score(logits, T=T)
         print(
-            f"[edge v{edge_version}] now predicts '{name}' (confidence {confidence:.2f})"
+            f"[edge v{edge_version}] now predicts '{name}' (confidence {confidence:.2f},"
+            f" energy {score:.4f} vs threshold {edge_threshold:.4f})"
         )
         version += 1
 
