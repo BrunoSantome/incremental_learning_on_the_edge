@@ -8,7 +8,9 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from core.configuration import load_config
 from edge.ood import msp_score, energy_score, calibrate_threshold, is_ood_score
 
-SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)  # src/, this file lives in src/experiments/
 
 # the scores to compare, each one maps a batch of logits to one score per utterance (higher = known intent)
 OOD_METHODS = {
