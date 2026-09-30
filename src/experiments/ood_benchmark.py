@@ -6,6 +6,7 @@ from datasets import load_dataset
 from sklearn.metrics import roc_auc_score
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from core.configuration import load_config
+from edge.inference import get_logits
 from edge.ood import msp_score, energy_score, calibrate_threshold, is_ood_score
 
 SRC_DIR = os.path.dirname(
@@ -61,24 +62,6 @@ def load_ood_split(config):
     intents = np.array([massive_names[i] for i in rows["intent"]])
     is_far = np.array([name.split("_")[0] not in known_scenarios for name in intents])
     return rows["utt"], intents, is_far
-
-
-def get_logits(model, tokenizer, utterances, batch_size=64):
-    # same forward pass as edge/inference.predict, but over many utterances at once
-    device = next(model.parameters()).device
-    all_logits = []
-    with torch.no_grad():
-        for start in range(0, len(utterances), batch_size):
-            batch = utterances[start : start + batch_size]
-            inputs = tokenizer(
-                batch,
-                truncation=True,
-                max_length=128,
-                padding=True,
-                return_tensors="pt",
-            ).to(device)
-            all_logits.append(model(**inputs).logits.float().cpu().numpy())
-    return np.concatenate(all_logits)  # shape [n utterances, 15]
 
 
 def run_known_benchmark(student_key="student1", keep=0.95):

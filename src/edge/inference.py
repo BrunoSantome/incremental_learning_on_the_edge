@@ -1,4 +1,5 @@
 # load the edge model once and predict an intent for one utterance.
+import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -50,3 +51,25 @@ def predict(model, tokenizer, labels, utterance, return_logits=False):
         confidence,
         probs.tolist(),
     )  # ood needs to track the whole probability distribution rather than the single predicted intent
+
+
+def get_logits(model, tokenizer, utterances, batch_size=64):
+    """
+    Same forward pass as predict(), over many utterances at once: used to score a whole split,
+    by the server when it calibrates the OOD threshold and by the detection benchmark.
+    Returns an array of shape [n utterances, num_labels].
+    """
+    device = next(model.parameters()).device
+    all_logits = []
+    with torch.no_grad():
+        for start in range(0, len(utterances), batch_size):
+            batch = utterances[start : start + batch_size]
+            inputs = tokenizer(
+                batch,
+                truncation=True,
+                max_length=128,
+                padding=True,
+                return_tensors="pt",
+            ).to(device)
+            all_logits.append(model(**inputs).logits.float().cpu().numpy())
+    return np.concatenate(all_logits)
