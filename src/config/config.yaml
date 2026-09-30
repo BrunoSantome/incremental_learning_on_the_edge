@@ -76,19 +76,3 @@ student1:
     alpha: 0.2 # old value 0.3
     output_dir: "outputs/checkpoints/student_ettin_68m_distill"
     selection_new_weight: 0.3 # weight for a balance between the retention and acquisition in the incremental criterion
-
-# student2: 
-#   name: "jhu-clsp/  "
-
-
-# student3:
-#   name: "nreimers/MiniLM-L6-H384-uncased"
-#   epochs: 40
-#   lr: 3.0e-5
-#   decay: 0.01 
-#   patience: 5 #3
-#   batch_size: 32
-#   #output_dir: "outputs/checkpoints/student2_minilm_l6"
-#   warm-up: 0.1
-#   temperature: 3.0
-#   alpha: 0.3 #0.7
