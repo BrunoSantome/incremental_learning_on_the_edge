@@ -114,7 +114,6 @@ class BaseDistillationTrainer:
         wandb_tags=None,  # wandb tags for filtering
         id2intent=None,  # {index: name}
         alpha=None,  # overrides distill_cfg["alpha"]; alpha=0 switches distillation off (ablation)
-        w=None,  # overrides distill_cfg["selection_new_weight"]; w=1 selects on the new intent only
     ):
         set_seed(seed)  # reproducibility
         self.student_model = student_model
@@ -152,7 +151,6 @@ class BaseDistillationTrainer:
         )  # this calculates the class weights for an imbalanced dataset.
         self.T = distill_cfg["temperature"]
         self.alpha = distill_cfg["alpha"] if alpha is None else alpha
-        self.w = distill_cfg["selection_new_weight"] if w is None else w
         self.optimizer = torch.optim.AdamW(
             self.student_model.parameters(),
             lr=config[self.student_name]["lr"],
@@ -422,12 +420,8 @@ class IncrementalDistiller(BaseDistillationTrainer):
         w gives the new intent more space to learn properly.
         w=0 means plain retention, checkpoint selected on the overall F1-macro score
         w=1 means pure acquisition, checkpoint selected on the new intent
-
-        The naive ablation condition runs at w=1 on purpose: choosing the epoch by the old
-        intents' eval scores would use information that condition is defined not to have, and
-        would by itself mitigate the forgetting it is meant to expose.
         """
-        w = self.w
+        w = self.config[self.student_name]["distill"]["selection_new_weight"]
         # old and new change every incremental step, which is why we need to calculate every time its number
         old = [metrics[f"eval_f1_{self.id2intent[i]}"] for i in range(self.n_old)]
         new = [
@@ -529,7 +523,6 @@ def run_incremental_step(
     wandb_tags=None,
     use_kd=True,
     use_replay=True,
-    w=None,
     previous_dir=None,
     output_dir=None,
 ):
@@ -543,7 +536,6 @@ def run_incremental_step(
     Ablation switches (default = the adopted method):
       use_kd=False     -> alpha = 0, no distillation term and no teacher forward pass
       use_replay=False -> the train split is the new intent only, no buffer of known intents
-      w                -> overrides the checkpoint-selection weight (w=1: new intent only)
     previous_dir / output_dir override the default _v{n} paths, so several conditions can be
     trained from the same V0 without overwriting each other.
     """
@@ -594,7 +586,6 @@ def run_incremental_step(
         wandb_tags=wandb_tags,
         id2intent=dataclass.id2intent,  # per-intent eval F1 logging
         alpha=None if use_kd else 0.0,  # 0 switches the distillation term off
-        w=w,  # None keeps the configured selection weight
     )
     trainer.train()
     return output_directory
