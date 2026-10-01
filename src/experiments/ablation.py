@@ -34,6 +34,7 @@ from experiments.config import (
     save_result,
     save_run_config,
 )
+from experiments.synthetic_cache import cache_path, ensure_synthetic_utterances
 
 CONDITIONS = {
     # name: (use_kd, use_replay, select_best)
@@ -84,7 +85,9 @@ def evaluate_version(dataclass, config, student_key, checkpoint, device=None):
     return metrics, per_intent, num_labels
 
 
-def _config_for(condition, seed, config, K=70, student_key="student1"):
+def _config_for(
+    condition, seed, config, K=70, student_key="student1", data_source="real"
+):
     """The ExperimentConfig of one condition: same run_id for training and for reporting."""
     use_kd, use_replay, _ = CONDITIONS[condition]
     distill_cfg = config[student_key]["distill"]
@@ -97,17 +100,30 @@ def _config_for(condition, seed, config, K=70, student_key="student1"):
         K=K,
         alpha=distill_cfg["alpha"] if use_kd else 0.0,
         w=distill_cfg["selection_new_weight"],
+        data_source=data_source,
         student_key=student_key,
     )
 
 
 def run_condition(
-    condition, seed, config, K=70, n_versions=None, student_key="student1"
+    condition,
+    seed,
+    config,
+    K=70,
+    n_versions=None,
+    student_key="student1",
+    data_source="real",
 ):
-    """One chain V1..Vn for a single condition and seed."""
+    """
+    One chain V1..Vn for a single condition and seed.
+
+    data_source="synthetic" trains the new intents on the cached LLM-generated utterances
+    (eval/test stay real, so the numbers remain comparable with the real-data runs). The cache is
+    shared by every condition, so the generated data is identical across them.
+    """
     use_kd, use_replay, select_best = CONDITIONS[condition]
     distill_cfg = config[student_key]["distill"]
-    cfg = _config_for(condition, seed, config, K, student_key)
+    cfg = _config_for(condition, seed, config, K, student_key, data_source)
     resolve = checkpoint_resolver(cfg, config)
 
     _reset_registry(config)
@@ -116,6 +132,10 @@ def run_condition(
     if n_versions is not None:
         intents = intents[:n_versions]
 
+    synthetic = None
+    if data_source == "synthetic":
+        synthetic = ensure_synthetic_utterances(dataclass, config, intents, seed=seed)
+
     save_run_config(
         cfg,
         extra={
@@ -123,6 +143,7 @@ def run_condition(
             "student": config[student_key]["name"],
             "temperature": distill_cfg["temperature"],
             "select_best": select_best,  # False -> final-epoch checkpoint (naive baseline)
+            "synthetic_cache": cache_path(seed) if synthetic else None,
         },
     )
     print(f"\n=== {cfg.run_id} ===\nintents: {intents}")
@@ -134,7 +155,16 @@ def run_condition(
             print(f"v{version} ({intent_name}): already done, skipped")
             continue
 
-        print(f"v{version}: adding '{intent_name}' [kd={use_kd}, replay={use_replay}]")
+        print(
+            f"v{version}: adding '{intent_name}'"
+            f" [kd={use_kd}, replay={use_replay}, data={data_source}]"
+        )
+        # synthetic: LLM train rows for the new intent, real eval/test (build_llm_new_utt)
+        new_utt = (
+            dataclass.build_llm_new_utt(intent_name, synthetic[intent_name])
+            if synthetic
+            else None
+        )
         started = time.perf_counter()
         output_dir = run_incremental_step(
             dataclass,
@@ -144,8 +174,9 @@ def run_condition(
             version,
             K,
             seed,
+            new_utt=new_utt,  # None -> real reserve data
             wandb_group=cfg.run_id,
-            wandb_tags=[condition, f"K{K}", f"seed{seed}", intent_name],
+            wandb_tags=[condition, f"K{K}", f"seed{seed}", data_source, intent_name],
             use_kd=use_kd,
             use_replay=use_replay,
             select_best=select_best,
@@ -166,6 +197,7 @@ def run_condition(
                 "seed": seed,
                 "version": version,
                 "intent_added": intent_name,
+                "data_source": data_source,
                 "num_labels": num_labels,
                 "train_seconds": seconds,
                 "per_intent_f1": per_intent,
@@ -177,8 +209,10 @@ def run_condition(
     return cfg
 
 
-def report_condition(condition, seed, config, K=70, student_key="student1"):
-    cfg = _config_for(condition, seed, config, K, student_key)
+def report_condition(
+    condition, seed, config, K=70, student_key="student1", data_source="real"
+):
+    cfg = _config_for(condition, seed, config, K, student_key, data_source)
     resolve = checkpoint_resolver(cfg, config)
 
     _reset_registry(config)
@@ -194,13 +228,12 @@ def report_condition(condition, seed, config, K=70, student_key="student1"):
         n_versions=len(intents),
         checkpoint_dir=resolve,  # this condition's own checkpoints, shared V0 at version 0
     )
+    retention = old_intent_persistance_table(rows, dataclass.id2intent)
+    acquisition = new_intent_acquisition_table(rows, dataclass.id2intent)
     print(f"\n=== {cfg.run_id} ===")
-    print(
-        f"\nretention (old intents)\n{old_intent_persistance_table(rows, dataclass.id2intent)}"
-    )
-    print(
-        f"\nacquisition (new intents)\n{new_intent_acquisition_table(rows, dataclass.id2intent)}"
-    )
+    # to_string(): prints every version column, pandas would otherwise drop the middle ones
+    print(f"\nretention (old intents)\n{retention.to_string()}")
+    print(f"\nacquisition (new intents)\n{acquisition.to_string()}")
     return rows, metrics_by_version
 
 
@@ -223,6 +256,13 @@ def main():
         help="stop after this many intents (default: all reserve intents)",
     )
     parser.add_argument(
+        "--data",
+        default="real",
+        choices=["real", "synthetic"],
+        help="new-intent training data: real MASSIVE rows, or the cached LLM-generated "
+        "utterances (eval/test stay real either way)",
+    )
+    parser.add_argument(
         "--report",
         action="store_true",
         help="do not train: re-score the checkpoints already trained and print the "
@@ -234,10 +274,17 @@ def main():
     for seed in args.seeds:
         for condition in args.conditions:
             if args.report:
-                report_condition(condition, seed, config, K=args.K)
+                report_condition(
+                    condition, seed, config, K=args.K, data_source=args.data
+                )
             else:
                 run_condition(
-                    condition, seed, config, K=args.K, n_versions=args.versions
+                    condition,
+                    seed,
+                    config,
+                    K=args.K,
+                    n_versions=args.versions,
+                    data_source=args.data,
                 )
 
 
