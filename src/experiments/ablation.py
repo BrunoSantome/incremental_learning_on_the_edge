@@ -31,11 +31,15 @@ from experiments.config import (
 )
 
 CONDITIONS = {
-    # name: (use_kd, use_replay)
-    "naive": (False, False),
-    "replay": (False, True),
-    "kd": (True, False),
-    "full": (True, True),
+    # name: (use_kd, use_replay, select_best)
+    # naive keeps the model of the last epoch: its eval split covers the old intents, which this
+    # condition is defined not to have access to, so selecting an epoch with it would itself
+    # mitigate the forgetting the condition exists to expose (and it did: selection kept an early
+    # epoch at mean_old 0.93 while the final model had collapsed to 0.03).
+    "naive": (False, False, False),
+    "replay": (False, True, True),
+    "kd": (True, False, True),
+    "full": (True, True, True),
 }
 
 
@@ -75,7 +79,7 @@ def run_condition(
     condition, seed, config, K=70, n_versions=None, student_key="student1"
 ):
     """One chain V1..Vn for a single condition and seed."""
-    use_kd, use_replay = CONDITIONS[condition]
+    use_kd, use_replay, select_best = CONDITIONS[condition]
     distill_cfg = config[student_key]["distill"]
     cfg = ExperimentConfig(
         experiment="ablation",
@@ -102,6 +106,7 @@ def run_condition(
             "intents_in_order": intents,
             "student": config[student_key]["name"],
             "temperature": distill_cfg["temperature"],
+            "select_best": select_best,  # False -> final-epoch checkpoint (naive baseline)
         },
     )
     print(f"\n=== {cfg.run_id} ===\nintents: {intents}")
@@ -127,6 +132,7 @@ def run_condition(
             wandb_tags=[condition, f"K{K}", f"seed{seed}", intent_name],
             use_kd=use_kd,
             use_replay=use_replay,
+            select_best=select_best,
             previous_dir=resolve(version - 1),  # V0 is shared by every condition
             output_dir=resolve(version),
         )

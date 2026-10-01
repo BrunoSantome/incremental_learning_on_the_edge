@@ -114,6 +114,7 @@ class BaseDistillationTrainer:
         wandb_tags=None,  # wandb tags for filtering
         id2intent=None,  # {index: name}
         alpha=None,  # overrides distill_cfg["alpha"]; alpha=0 switches distillation off (ablation)
+        select_best=True,  # False: no early stopping, keep the model after the last epoch
     ):
         set_seed(seed)  # reproducibility
         self.student_model = student_model
@@ -151,6 +152,7 @@ class BaseDistillationTrainer:
         )  # this calculates the class weights for an imbalanced dataset.
         self.T = distill_cfg["temperature"]
         self.alpha = distill_cfg["alpha"] if alpha is None else alpha
+        self.select_best = select_best
         self.optimizer = torch.optim.AdamW(
             self.student_model.parameters(),
             lr=config[self.student_name]["lr"],
@@ -228,6 +230,12 @@ class BaseDistillationTrainer:
                 self.history.setdefault(k, []).append(v)
 
             wandb.log({"epoch": epoch, "train_loss": loss, "lr": last_lr, **metrics})
+
+            if not self.select_best:
+                # naive fine-tuning baseline: the eval split covers the intents this condition is defined not to have access to, so choosing an epoch with it would itself mitigate
+                # the forgetting the condition exists to expose. Training the full schedule and keep the last epoch, as the fine-tuning baseline of the continual-learning literature.
+                continue
+
             selection = self._selection_metric(metrics)  # we get F1_score_macro for the
             if (
                 selection > self.best_selection
@@ -243,6 +251,10 @@ class BaseDistillationTrainer:
                 if self.patience_counter >= self.patience:
                     print(f"Early stopping at epoch {epoch}")
                     break
+
+        if not self.select_best:  # no epoch was selected: the final model is the result
+            print("Saving final-epoch checkpoint")
+            self.student_model.save_pretrained(self.checkpoint_path)
 
         with open(  # saves checkpoints
             os.path.join(self.checkpoint_path, f"history-{self.student_name}.json"), "w"
@@ -523,6 +535,7 @@ def run_incremental_step(
     wandb_tags=None,
     use_kd=True,
     use_replay=True,
+    select_best=True,
     previous_dir=None,
     output_dir=None,
 ):
@@ -536,6 +549,7 @@ def run_incremental_step(
     Ablation switches (default = the adopted method):
       use_kd=False     -> alpha = 0, no distillation term and no teacher forward pass
       use_replay=False -> the train split is the new intent only, no buffer of known intents
+      select_best=False-> no early stopping, the checkpoint is the model after the last epoch
     previous_dir / output_dir override the default _v{n} paths, so several conditions can be
     trained from the same V0 without overwriting each other.
     """
@@ -586,6 +600,7 @@ def run_incremental_step(
         wandb_tags=wandb_tags,
         id2intent=dataclass.id2intent,  # per-intent eval F1 logging
         alpha=None if use_kd else 0.0,  # 0 switches the distillation term off
+        select_best=select_best,
     )
     trainer.train()
     return output_directory
