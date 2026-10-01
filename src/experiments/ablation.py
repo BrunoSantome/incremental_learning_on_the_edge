@@ -21,7 +21,12 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from core.configuration import load_config
 from core.dataloader import DataClass
 from core.distillation_1 import run_incremental_step
-from core.evaluate import evaluate_per_intent
+from core.evaluate import (
+    evaluate_per_intent,
+    intents_report,
+    old_intent_persistance_table,
+    new_intent_acquisition_table,
+)
 from experiments.config import (
     ExperimentConfig,
     checkpoint_resolver,
@@ -75,13 +80,11 @@ def evaluate_version(dataclass, config, student_key, checkpoint, device=None):
     return metrics, per_intent, num_labels
 
 
-def run_condition(
-    condition, seed, config, K=70, n_versions=None, student_key="student1"
-):
-    """One chain V1..Vn for a single condition and seed."""
-    use_kd, use_replay, select_best = CONDITIONS[condition]
+def _config_for(condition, seed, config, K=70, student_key="student1"):
+    """The ExperimentConfig of one condition: same run_id for training and for reporting."""
+    use_kd, use_replay, _ = CONDITIONS[condition]
     distill_cfg = config[student_key]["distill"]
-    cfg = ExperimentConfig(
+    return ExperimentConfig(
         experiment="ablation",
         condition=condition,
         use_kd=use_kd,
@@ -92,6 +95,15 @@ def run_condition(
         w=distill_cfg["selection_new_weight"],
         student_key=student_key,
     )
+
+
+def run_condition(
+    condition, seed, config, K=70, n_versions=None, student_key="student1"
+):
+    """One chain V1..Vn for a single condition and seed."""
+    use_kd, use_replay, select_best = CONDITIONS[condition]
+    distill_cfg = config[student_key]["distill"]
+    cfg = _config_for(condition, seed, config, K, student_key)
     resolve = checkpoint_resolver(cfg, config)
 
     _reset_registry(config)
@@ -161,6 +173,33 @@ def run_condition(
     return cfg
 
 
+def report_condition(condition, seed, config, K=70, student_key="student1"):
+    cfg = _config_for(condition, seed, config, K, student_key)
+    resolve = checkpoint_resolver(cfg, config)
+
+    _reset_registry(config)
+    dataclass = DataClass()
+    intents = reserve_intent_names(dataclass, config)
+    for intent_name in intents:
+        dataclass.admit_intent(intent_name)
+
+    rows, metrics_by_version = intents_report(
+        dataclass,
+        student_key,
+        config,
+        n_versions=len(intents),
+        checkpoint_dir=resolve,  # this condition's own checkpoints, shared V0 at version 0
+    )
+    print(f"\n=== {cfg.run_id} ===")
+    print(
+        f"\nretention (old intents)\n{old_intent_persistance_table(rows, dataclass.id2intent)}"
+    )
+    print(
+        f"\nacquisition (new intents)\n{new_intent_acquisition_table(rows, dataclass.id2intent)}"
+    )
+    return rows, metrics_by_version
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="forgetting ablation over the reserve intents"
@@ -179,12 +218,23 @@ def main():
         default=None,
         help="stop after this many intents (default: all reserve intents)",
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="do not train: re-score the checkpoints already trained and print the "
+        "retention / acquisition tables of each condition",
+    )
     args = parser.parse_args()
 
     config = load_config()
     for seed in args.seeds:
         for condition in args.conditions:
-            run_condition(condition, seed, config, K=args.K, n_versions=args.versions)
+            if args.report:
+                report_condition(condition, seed, config, K=args.K)
+            else:
+                run_condition(
+                    condition, seed, config, K=args.K, n_versions=args.versions
+                )
 
 
 if __name__ == "__main__":
