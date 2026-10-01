@@ -31,11 +31,14 @@ from experiments.config import (
 )
 
 CONDITIONS = {
-    # name: (use_kd, use_replay)
-    "naive": (False, False),
-    "replay": (False, True),
-    "kd": (True, False),
-    "full": (True, True),
+    # name: (use_kd, use_replay, w)
+    # w = checkpoint-selection weight; None keeps the configured value (0.3).
+    # naive runs at w=1 (selection on the new intent only): picking the epoch by the old intents' eval scores would use information this condition is defined not to have, and would by itself
+    # mitigate the forgetting it is meant to expose. The other conditions may use old-intent information by construction (replay buffer or teacher), so they keep the configured weight.
+    "naive": (False, False, 1.0),
+    "replay": (False, True, None),
+    "kd": (True, False, None),
+    "full": (True, True, None),
 }
 
 
@@ -75,7 +78,7 @@ def run_condition(
     condition, seed, config, K=70, n_versions=None, student_key="student1"
 ):
     """One chain V1..Vn for a single condition and seed."""
-    use_kd, use_replay = CONDITIONS[condition]
+    use_kd, use_replay, w = CONDITIONS[condition]
     distill_cfg = config[student_key]["distill"]
     cfg = ExperimentConfig(
         experiment="ablation",
@@ -84,8 +87,8 @@ def run_condition(
         use_replay=use_replay,
         seed=seed,
         K=K,
-        alpha=distill_cfg["alpha"],
-        w=distill_cfg["selection_new_weight"],
+        alpha=distill_cfg["alpha"] if use_kd else 0.0,
+        w=distill_cfg["selection_new_weight"] if w is None else w,
         student_key=student_key,
     )
     resolve = checkpoint_resolver(cfg, config)
@@ -127,6 +130,7 @@ def run_condition(
             wandb_tags=[condition, f"K{K}", f"seed{seed}", intent_name],
             use_kd=use_kd,
             use_replay=use_replay,
+            w=w,
             previous_dir=resolve(version - 1),  # V0 is shared by every condition
             output_dir=resolve(version),
         )
