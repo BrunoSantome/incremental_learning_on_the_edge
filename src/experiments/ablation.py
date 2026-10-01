@@ -41,9 +41,13 @@ CONDITIONS = {
     # condition is defined not to have access to, so selecting an epoch with it would itself
     # mitigate the forgetting the condition exists to expose (and it did: selection kept an early
     # epoch at mean_old 0.93 while the final model had collapsed to 0.03).
+    # Rule: a condition's data access governs both its training and its checkpoint selection.
+    # naive and kd store nothing of the old intents, so they also get no old-intent eval split to
+    # select an epoch with (validation rows are stored old examples too) and keep the last epoch.
+    # replay and full do hold a buffer, so they use the system's own selection criterion.
     "naive": (False, False, False),
     "replay": (False, True, True),
-    "kd": (True, False, True),
+    "kd": (True, False, False),
     "full": (True, True, True),
 }
 
