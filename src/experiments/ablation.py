@@ -34,7 +34,12 @@ from experiments.config import (
     save_result,
     save_run_config,
 )
-from experiments.synthetic_cache import cache_path, ensure_synthetic_utterances
+from experiments.synthetic_cache import (
+    cache_path,
+    ensure_synthetic_utterances,
+    escalation_cache_path,
+    ensure_escalated_intents,
+)
 
 CONDITIONS = {
     # name: (use_kd, use_replay, select_best)
@@ -86,7 +91,13 @@ def evaluate_version(dataclass, config, student_key, checkpoint, device=None):
 
 
 def _config_for(
-    condition, seed, config, K=70, student_key="student1", data_source="real"
+    condition,
+    seed,
+    config,
+    K=70,
+    student_key="student1",
+    data_source="real",
+    n_intents=5,
 ):
     """The ExperimentConfig of one condition: same run_id for training and for reporting."""
     use_kd, use_replay, _ = CONDITIONS[condition]
@@ -101,6 +112,7 @@ def _config_for(
         alpha=distill_cfg["alpha"] if use_kd else 0.0,
         w=distill_cfg["selection_new_weight"],
         data_source=data_source,
+        n_intents=n_intents,
         student_key=student_key,
     )
 
@@ -113,6 +125,7 @@ def run_condition(
     n_versions=None,
     student_key="student1",
     data_source="real",
+    escalations_file=None,
 ):
     """
     One chain V1..Vn for a single condition and seed.
@@ -120,21 +133,36 @@ def run_condition(
     data_source="synthetic" trains the new intents on the cached LLM-generated utterances
     (eval/test stay real, so the numbers remain comparable with the real-data runs). The cache is
     shared by every condition, so the generated data is identical across them.
+
+    escalations_file (data_source="escalated") runs the long-horizon scenario: a JSON array of
+    escalated utterances, each one turned into an intent the LLM names itself, with train, eval and
+    test all generated. Retention is still measured on the 15 original intents' real test data.
     """
     use_kd, use_replay, select_best = CONDITIONS[condition]
     distill_cfg = config[student_key]["distill"]
-    cfg = _config_for(condition, seed, config, K, student_key, data_source)
-    resolve = checkpoint_resolver(cfg, config)
 
     _reset_registry(config)
     dataclass = DataClass()  # rebuilt at the 15 pretrain intents
-    intents = reserve_intent_names(dataclass, config)
+
+    synthetic = None  # {intent: [utterances]}, real eval/test
+    escalated = None  # {intent: [utterances]}, eval/test generated too
+    if escalations_file:
+        data_source = "escalated"
+        escalated = ensure_escalated_intents(
+            dataclass, config, escalations_file, seed=seed
+        )
+        intents = list(escalated)
+    else:
+        intents = reserve_intent_names(dataclass, config)
     if n_versions is not None:
         intents = intents[:n_versions]
-
-    synthetic = None
     if data_source == "synthetic":
         synthetic = ensure_synthetic_utterances(dataclass, config, intents, seed=seed)
+
+    cfg = _config_for(
+        condition, seed, config, K, student_key, data_source, n_intents=len(intents)
+    )
+    resolve = checkpoint_resolver(cfg, config)
 
     save_run_config(
         cfg,
@@ -144,26 +172,33 @@ def run_condition(
             "temperature": distill_cfg["temperature"],
             "select_best": select_best,  # False -> final-epoch checkpoint (naive baseline)
             "synthetic_cache": cache_path(seed) if synthetic else None,
+            "escalation_cache": (
+                escalation_cache_path(escalations_file, seed) if escalated else None
+            ),
         },
     )
     print(f"\n=== {cfg.run_id} ===\nintents: {intents}")
 
     for version, intent_name in enumerate(intents, start=1):
+        # synthetic: LLM train rows, real eval/test | escalated: train+eval+test all generated
+        if synthetic:
+            new_utt = dataclass.build_llm_new_utt(intent_name, synthetic[intent_name])
+        elif escalated:
+            new_utt = dataclass.build_synthetic_splits(
+                intent_name, escalated[intent_name], n_eval=20, n_test=20, seed=seed
+            )
+        else:
+            new_utt = None  # real reserve data
+
         if is_done(cfg, version):
             # already trained in an earlier session: keep the label space in sync and move on
-            dataclass.admit_intent(intent_name)
+            dataclass.admit_intent(intent_name, new_utt=new_utt)
             print(f"v{version} ({intent_name}): already done, skipped")
             continue
 
         print(
             f"v{version}: adding '{intent_name}'"
             f" [kd={use_kd}, replay={use_replay}, data={data_source}]"
-        )
-        # synthetic: LLM train rows for the new intent, real eval/test (build_llm_new_utt)
-        new_utt = (
-            dataclass.build_llm_new_utt(intent_name, synthetic[intent_name])
-            if synthetic
-            else None
         )
         started = time.perf_counter()
         output_dir = run_incremental_step(
@@ -210,16 +245,39 @@ def run_condition(
 
 
 def report_condition(
-    condition, seed, config, K=70, student_key="student1", data_source="real"
+    condition,
+    seed,
+    config,
+    K=70,
+    student_key="student1",
+    data_source="real",
+    escalations_file=None,
 ):
-    cfg = _config_for(condition, seed, config, K, student_key, data_source)
-    resolve = checkpoint_resolver(cfg, config)
-
     _reset_registry(config)
     dataclass = DataClass()
-    intents = reserve_intent_names(dataclass, config)
-    for intent_name in intents:
-        dataclass.admit_intent(intent_name)
+
+    if escalations_file:  # long-horizon scenario: names and data come from the cache
+        data_source = "escalated"
+        escalated = ensure_escalated_intents(
+            dataclass, config, escalations_file, seed=seed
+        )
+        intents = list(escalated)
+        for intent_name in intents:
+            dataclass.admit_intent(
+                intent_name,
+                new_utt=dataclass.build_synthetic_splits(
+                    intent_name, escalated[intent_name], n_eval=20, n_test=20, seed=seed
+                ),
+            )
+    else:
+        intents = reserve_intent_names(dataclass, config)
+        for intent_name in intents:
+            dataclass.admit_intent(intent_name)
+
+    cfg = _config_for(
+        condition, seed, config, K, student_key, data_source, n_intents=len(intents)
+    )
+    resolve = checkpoint_resolver(cfg, config)
 
     rows, metrics_by_version = intents_report(
         dataclass,
@@ -263,6 +321,12 @@ def main():
         "utterances (eval/test stay real either way)",
     )
     parser.add_argument(
+        "--escalations",
+        default=None,
+        help="JSON array of escalated utterances (long-horizon scenario): the LLM names and "
+        "generates each intent, train/eval/test all synthetic. Overrides --data",
+    )
+    parser.add_argument(
         "--report",
         action="store_true",
         help="do not train: re-score the checkpoints already trained and print the "
@@ -275,7 +339,12 @@ def main():
         for condition in args.conditions:
             if args.report:
                 report_condition(
-                    condition, seed, config, K=args.K, data_source=args.data
+                    condition,
+                    seed,
+                    config,
+                    K=args.K,
+                    data_source=args.data,
+                    escalations_file=args.escalations,
                 )
             else:
                 run_condition(
@@ -285,6 +354,7 @@ def main():
                     K=args.K,
                     n_versions=args.versions,
                     data_source=args.data,
+                    escalations_file=args.escalations,
                 )
 
 

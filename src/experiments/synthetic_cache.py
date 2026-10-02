@@ -18,6 +18,48 @@ def cache_path(seed=42):
     return os.path.join(CACHE_DIR, f"synth_utterances_s{seed}.json")
 
 
+def escalation_cache_path(escalations_file, seed=42):
+    stem = os.path.splitext(os.path.basename(escalations_file))[0]
+    return os.path.join(CACHE_DIR, f"{stem}_generated_s{seed}.json")
+
+
+def ensure_escalated_intents(
+    dataclass, config, escalations_file, seed=42, n_generate=130, samples_per_intent=8
+):
+    """
+    One intent per escalated utterance, named by the LLM itself (target_intent=None), as
+    run_production_step does. escalations_file is a JSON array of utterances, in the order the
+    increments happen. Cached so replay and full train on identical names and utterances.
+
+    Returns {intent name: [utterances]}, in that order.
+    """
+    path = escalation_cache_path(escalations_file, seed)
+    if os.path.exists(path):  # the second condition reuses the first one's data
+        with open(path) as f:
+            return json.load(f)
+
+    with open(escalations_file) as f:
+        escalations = json.load(f)
+
+    cached = {}
+    for utterance in escalations:
+        name, utterances = generate_new_intent(
+            dataclass=dataclass,
+            escalated_utts=[utterance],
+            target_intent=None,  # production mode: the LLM names the intent
+            n_utterances=n_generate,
+            config=config,
+            samples_per_intent=samples_per_intent,
+        )
+        cached[name] = list(utterances)
+        print(f"'{utterance}' -> '{name}', {len(utterances)} utterances")
+        with open(
+            path, "w"
+        ) as f:  # written per intent so an interrupted generation resumes
+            json.dump(cached, f, indent=2)
+    return cached
+
+
 def ensure_synthetic_utterances(
     dataclass, config, intents, seed=42, n_generate=130, samples_per_intent=8
 ):

@@ -31,15 +31,21 @@ class ExperimentConfig:
     K: int = 70  # replay buffer: utterances kept per known intent
     alpha: float = 0.2  # KD weight in the loss
     w: float = 0.3  # selection_new_weight, checkpoint selection criterion
-    data_source: str = "real"  # "real" (MASSIVE reserve intents) | "synthetic" (LLM generated)
+    # "real" (MASSIVE reserve intents) | "synthetic" (LLM utterances, real eval/test)
+    # | "escalated" (LLM names and generates the intent from one escalated utterance, all splits synthetic)
+    data_source: str = "real"
+    n_intents: int = 5  # increments this run covers (the horizon)
     student_key: str = "student1"
     note: str = ""  # free text, ends up in run_config.json
 
     @property
     def run_id(self):
+        # the horizon is only tagged when it differs from the 5 reserve intents, so the runs
+        # finished before this field existed keep their directories
+        horizon = "" if self.n_intents == 5 else f"_n{self.n_intents}"
         return (
             f"{self.experiment}_{self.condition}_{self.data_source}"
-            f"_K{self.K}_a{self.alpha}_w{self.w}_s{self.seed}"
+            f"_K{self.K}_a{self.alpha}_w{self.w}{horizon}_s{self.seed}"
         )
 
 
