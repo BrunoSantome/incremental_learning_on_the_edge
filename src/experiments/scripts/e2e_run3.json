@@ -1,0 +1,26 @@
+{
+  "expected": {
+    "1": "unknown capability -> escalate, V1",
+    "2": "known play_music -> no escalation",
+    "3": "unknown capability -> escalate, V2",
+    "4": "re-phrasing of #1 -> no escalation, predicts V1's intent",
+    "5": "known weather_query -> no escalation",
+    "6": "unknown capability -> escalate, V3",
+    "7": "near-OOD lists_remove (scenario 'lists', shared with the known lists_createoradd) ",
+    "8": "known audio_volume_up -> no escalation",
+    "9": "unknown capability -> escalate, V4",
+    "10": "known datetime_query -> no escalation"
+  },
+  "utterances": [
+    "close the rear windows of the car",
+    "play some jazz",
+    "warm up the steering wheel",
+    "shut the back window",
+    "what's the weather like tomorrow",
+    "turn the headlights on",
+    "remove milk from my shopping list",
+    "turn the volume up please",
+    "check the tyre pressure",
+    "what time is it"
+  ]
+}

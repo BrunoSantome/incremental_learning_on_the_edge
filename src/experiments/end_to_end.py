@@ -10,6 +10,8 @@
 import os
 import json
 import shutil
+import time
+from datetime import datetime
 
 from core.configuration import load_config
 from core.dataloader import DataClass
@@ -71,6 +73,21 @@ def _calibrate_threshold(model, tokenizer, dataclass, config):
     logits = get_logits(model, tokenizer, utterances)
     scores = energy_score(logits, T=config["ood"]["T"])
     return calibrate_threshold(scores, keep=config["ood"]["keep"])
+
+
+def _dir_size_mb(path):
+    """Size of a checkpoint directory in MB: the model as it is shipped to the device."""
+    total = 0
+    for root, _, files in os.walk(path):
+        total += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+    return round(total / (1024 * 1024), 2)
+
+
+def _save_log(log_path, log):
+    """Rewrite the whole log after every iteration, so a crash keeps what already happened."""
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "w") as f:
+        json.dump(log, f, indent=2)
 
 
 def _clear_registry_and_mailbox(config):
@@ -158,8 +175,6 @@ def run_production_iteration_simulation_test():
     so it is a more controlled test, and can be compared to the results got previously on the server side production test
 
     This is not the real production mechanism.
-
-    TODO: Still the ood is bad.
     """
     config = load_config()
     student_key = "student1"
@@ -227,22 +242,35 @@ def run_production_iteration_simulation_test():
     print(f"[edge v{edge_version}] predicted '{name}' (confidence {confidence:.2f})")
 
 
-def run_interactive_simulation():
+def _stdin_utterances():
+    """Utterances typed in the terminal, for the interactive demonstration."""
+    while True:
+        try:
+            utterance = input("\nutterance (exit/quit to stop)> ").strip()
+        except EOFError:  # stdin closed
+            return
+        if utterance.lower() in ("exit", "quit"):
+            return
+        if not utterance:
+            continue
+        yield utterance
+
+
+def _run_simulation(utterances, run_name="e2e"):
     """
-    Final interactive end-to-end simulation of the system. Type an utterance in the terminal, if unknown it will be escalated
-    , server generates data and retrains a new version, evaluates it, the edge "device" updates and predicts again.
+    End-to-end simulation of the system over a sequence of utterances: the edge predicts and
+    scores, unknown ones are escalated, the server generates data and retrains a new version,
+    evaluates it, recalibrates the threshold and publishes; the edge updates and predicts again.
     Intents accumulate across iterations (V1, V2, ...)
 
     Detection uses the Energy score against the threshold calibrated for the running version:
     V0's is computed here at start-up, and every later one by the server after retraining, then
     shipped with the release (the edge has no eval data to compute it itself).
 
-    The _v1+ checkpoints are not deleted: reset them manually before each run
+    'utterances' is any iterable: typed input (run_interactive_simulation) or a scripted list
+    (run_scripted_simulation).
 
-    TODO: save the data of each iteration for in-depth analysis
-    TODO: save/reset the state automatically instead of manually
     TODO: save tokenizer into the checkpoint to not have cloud dependency on the edge model
-    TODO: check if returning data for in-depth analysis rather than saving it every run
     """
 
     config = load_config()
@@ -267,15 +295,31 @@ def run_interactive_simulation():
         f" (keeps {config['ood']['keep']:.0%} of known-intent utterances on the device)"
     )
 
-    while True:
-        try:
-            utterance = input("\nutterance (exit/quit to stop)> ").strip()
-        except EOFError:  # stdin closed
-            break
-        if utterance.lower() in ("exit", "quit"):
-            break
-        if not utterance:
-            continue
+    # one JSON log per run: every utterance, every decision and the cost of each phase, so the
+    # demonstration does not have to be repeated to measure it (closure / system-level metrics)
+    v0_dir = _checkpoint_dir(config, student_key, 0)
+    run_dir = os.path.join(
+        SRC_DIR,
+        "outputs",
+        "results",
+        f"{run_name}_{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+    )
+    log_path = os.path.join(run_dir, "log.json")
+    log = {
+        "started": datetime.now().isoformat(timespec="seconds"),
+        "student": config[student_key]["name"],
+        "ood": {"score": "energy", "T": T, "keep": config["ood"]["keep"]},
+        "v0": {
+            "threshold": edge_threshold,
+            "checkpoint_mb": _dir_size_mb(v0_dir),
+        },
+        "iterations": [],
+    }
+    _save_log(log_path, log)
+    print(f"[log] {log_path}")
+
+    for utterance in utterances:
+        print(f"\nutterance> {utterance}")
 
         # edge: inference + OOD (Energy score against the threshold shipped with this version)
         name, confidence, probs, logits = predict(
@@ -286,14 +330,31 @@ def run_interactive_simulation():
             f"[edge v{edge_version}] predicted '{name}' (confidence {confidence:.2f},"
             f" energy {score:.4f} vs threshold {edge_threshold:.4f})"
         )
-        if not is_ood_score(score, edge_threshold):
+
+        escalated = bool(is_ood_score(score, edge_threshold))
+        record = {
+            "utterance": utterance,
+            "edge_version": edge_version,
+            "predicted": name,
+            "confidence": confidence,
+            "energy": float(score),
+            "threshold": edge_threshold,
+            "escalated": escalated,
+        }
+        if not escalated:
+            log["iterations"].append(record)
+            _save_log(log_path, log)
             continue
 
         print("[edge] OOD: escalating")
+        escalated_at = (
+            time.perf_counter()
+        )  # escalation -> deployed release, the closure metric
         send_escalation(utterance, edge_version)
 
         # server: generation + retrain
         esc = read_escalations()[0]  # exactly one
+        started = time.perf_counter()
         intent_name, output_dir = run_production_step(
             dataclass,
             [esc["utterance"]],
@@ -303,8 +364,16 @@ def run_interactive_simulation():
             K=70,
             n_generate=130,
         )
+        record["server_step_seconds"] = (
+            time.perf_counter() - started
+        )  # LLM generation + retraining
+        record["intent_name"] = intent_name
+
         if intent_name is None:
             print("server LLM named an existing intent: skipped")
+            record["skipped_reason"] = "LLM named an existing intent"
+            log["iterations"].append(record)
+            _save_log(log_path, log)
             continue
 
         # server: cumulative evaluation V0..Vn
@@ -318,16 +387,32 @@ def run_interactive_simulation():
 
         # server: recalibrate the threshold for the version just trained (the new head shifts the
         # Energy scale, so V(n-1)'s threshold no longer keeps the intended share of known intents)
+        started = time.perf_counter()
         new_model, new_tokenizer = load_edge_model(output_dir, tokenizer_name)
         new_threshold = _calibrate_threshold(
             new_model, new_tokenizer, dataclass, config
         )
+        record["calibration_seconds"] = time.perf_counter() - started
         print(f"server calibrated v{version} threshold: {new_threshold:.4f}")
 
         publish_release(
             version, output_dir, dataclass.id2intent, threshold=new_threshold
         )
         print(f"server published v{version} ({intent_name})")
+
+        # the generated data exists only in memory: saved so the invented intents' utterances
+        # (and their eval/test rows) can still be inspected after the run
+        dataset_dir = os.path.join(run_dir, f"dataset_v{version}")
+        dataclass.dataset_pretraining.save_to_disk(dataset_dir)
+
+        record.update(
+            {
+                "new_version": version,
+                "new_threshold": new_threshold,
+                "per_intent_f1": rows[version],
+                "dataset_dir": dataset_dir,
+            }
+        )
 
         # edge: update + re-predict the same utterance
 
@@ -337,7 +422,7 @@ def run_interactive_simulation():
         edge_labels = {
             int(k): v for k, v in release["labels"].items()
         }  # JSON -> str keys
-        edge_threshold = ["threshold"]  # shipped with the model it belongs to
+        edge_threshold = release["threshold"]  # shipped with the model it belongs to
 
         name, confidence, probs, logits = predict(
             model, tokenizer, edge_labels, utterance, return_logits=True
@@ -347,7 +432,40 @@ def run_interactive_simulation():
             f"[edge v{edge_version}] now predicts '{name}' (confidence {confidence:.2f},"
             f" energy {score:.4f} vs threshold {edge_threshold:.4f})"
         )
+
+        # loop closure: does the escalated utterance now land on the intent it created?
+        record.update(
+            {
+                "after_update_predicted": name,
+                "loop_closed": name == intent_name,
+                "total_seconds": time.perf_counter() - escalated_at,
+            }
+        )
+        log["iterations"].append(record)
+        _save_log(log_path, log)
         version += 1
+
+    return log
+
+
+def run_interactive_simulation():
+    """Type the utterances in the terminal (live demonstration)."""
+    return _run_simulation(_stdin_utterances(), run_name="e2e_interactive")
+
+
+def run_scripted_simulation(script_path):
+    """
+    Same loop over a fixed list of utterances from a JSON file, so a run is reproducible and can
+    be repeated byte-identically (the LLM generation is what varies between runs).
+
+    The file is a JSON list of strings, or an object with "utterances" and optional "note".
+    """
+    with open(script_path) as f:
+        script = json.load(f)
+    utterances = script["utterances"] if isinstance(script, dict) else script
+    name = os.path.splitext(os.path.basename(script_path))[0]
+    print(f"[script] {script_path}: {len(utterances)} utterances")
+    return _run_simulation(utterances, run_name=f"e2e_{name}")
 
 
 if __name__ == "__main__":
