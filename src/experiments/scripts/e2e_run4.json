@@ -1,0 +1,36 @@
+{
+  "expected": {
+    "1": "unknown capability, unoccupied region (windows) -> escalate, V1",
+    "2": "known play_music -> no escalation",
+    "3": "re-phrasing of #1 -> no escalation, predicted as V1's intent (acquisition generalises)",
+    "4": "ADJACENCY PROBE: distinct capability inside V1's neighbourhood ('driver', 'seat' appear throughout the window utterances) -> hypothesis: absorbed, high confidence, NOT escalated",
+    "5": "known weather_query -> no escalation",
+    "6": "unknown capability, region distant from V1 -> escalate, V2",
+    "7": "re-phrasing of #6 -> no escalation, predicted as V2's intent",
+    "8": "ADJACENCY PROBE: distinct capability inside V2's neighbourhood (range vs charge) -> hypothesis: absorbed, NOT escalated",
+    "9": "near-OOD lists_remove (scenario 'lists', shared with the known lists_createoradd) -> no escalation expected (benchmark: caught 21.2%)",
+    "10": "known audio_volume_up -> no escalation",
+    "11": "unknown capability, region distant from V1 and V2 -> escalate, V3",
+    "12": "re-phrasing of #11 -> no escalation, predicted as V3's intent",
+    "13": "known news_query -> no escalation (also checks V3 does not swallow a lexically close known intent)",
+    "14": "DECISIVE REPEAT: absorbed in run 3 by car_steering_wheel_heater_control; here no wheel class exists, so the adjacency hypothesis predicts it escalates -> V4",
+    "15": "known datetime_query -> no escalation"
+  },
+  "utterances": [
+    "open the front window of the car",
+    "play some jazz",
+    "roll down the passenger window",
+    "turn on the heating of the driver seat",
+    "what's the weather like tomorrow",
+    "how much battery charge is left",
+    "what is the remaining charge of the battery",
+    "how many miles can i still drive",
+    "remove milk from my shopping list",
+    "turn the volume up please",
+    "tell me a funny joke",
+    "say something funny",
+    "what's in the news today",
+    "check the tyre pressure",
+    "what time is it"
+  ]
+}
