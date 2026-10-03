@@ -64,6 +64,92 @@ def load_ood_split(config):
     return rows["utt"], intents, is_far
 
 
+def run_absorption_benchmark(
+    checkpoint, threshold, new_intents, student_key="student1"
+):
+    """
+    Detection and over-extension of a version produced by the end-to-end loop: set C scored by a
+    model that has meanwhile invented its own intents, with the Energy threshold that version was
+    shipped with (from the run's log, not recalibrated, so this is the rule that actually ran).
+
+    For the unknown utterances that are NOT escalated (the silent failures) it also reports which
+    intent they are assigned to: if the invented intents absorb a share well above their share of
+    the label space, the new classes over-extend, which acquisition and retention cannot show.
+    """
+    config = load_config()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = (
+        AutoModelForSequenceClassification.from_pretrained(checkpoint).to(device).eval()
+    )
+    tokenizer = AutoTokenizer.from_pretrained(config[student_key]["name"])
+
+    # head order: the registry sorts the pretrain names, then appends each learned intent
+    massive_names = (
+        load_dataset(config["dataset"]["name"], "en-US")["test"]
+        .features["intent"]
+        .names
+    )
+    known_names = sorted(
+        massive_names[i] for i in config["dataset"]["pretrain_intents"]
+    )
+    labels = known_names + list(new_intents)
+    assert model.config.num_labels == len(labels), (
+        f"checkpoint has {model.config.num_labels} intents, {len(labels)} names given"
+    )
+
+    utts_c, _, is_far = load_ood_split(
+        config
+    )  # grouped by predicted intent, not by the true one
+    logits_c = get_logits(model, tokenizer, utts_c)
+    scores_c = energy_score(logits_c, T=config["ood"]["T"])
+    escalated = is_ood_score(scores_c, threshold)
+    predicted = np.array([labels[i] for i in logits_c.argmax(-1)])
+
+    print(
+        f"\n{os.path.basename(checkpoint)}: {len(labels)} intents, threshold {threshold:.4f}"
+    )
+    print(f"caught far:  {escalated[is_far].mean():.1%} of {is_far.sum()} utterances")
+    print(
+        f"caught near: {escalated[~is_far].mean():.1%} of {(~is_far).sum()} utterances"
+    )
+
+    # the silent failures: unknown utterances the device would have answered itself
+    passed_far = ~escalated & is_far
+    counts = pd.Series(predicted[passed_far]).value_counts()
+    share_new = (
+        float(np.isin(predicted[passed_far], list(new_intents)).mean())
+        if passed_far.any()
+        else None
+    )
+
+    if share_new is None:
+        print("\nno far-OOD utterance passed: nothing to attribute")
+    else:
+        print(
+            f"\nfar-OOD utterances that passed: {passed_far.sum()}"
+            f"\n  assigned to the {len(new_intents)} invented intents:"
+            f" {share_new:.1%} (they are {len(new_intents) / len(labels):.1%} of the label space)"
+        )
+        table = pd.DataFrame(
+            {"utterances": counts, "share": counts / counts.sum()}
+        ).head(10)
+        table["invented"] = [name in set(new_intents) for name in table.index]
+        print(
+            f"\npredicted intent of the far-OOD utterances that passed\n{table.to_string()}"
+        )
+
+    return {
+        "checkpoint": checkpoint,
+        "threshold": threshold,
+        "num_intents": len(labels),
+        "caught_far": float(escalated[is_far].mean()),
+        "caught_near": float(escalated[~is_far].mean()),
+        "passed_far": int(passed_far.sum()),
+        "share_assigned_to_invented": share_new,
+        "predicted_counts": counts.to_dict(),
+    }
+
+
 def run_known_benchmark(student_key="student1", keep=0.95):
     config = load_config()
     device = "cuda" if torch.cuda.is_available() else "cpu"
