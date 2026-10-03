@@ -666,6 +666,7 @@ def run_production_step(
         intent_name, utterances, n_eval, n_test, seed
     )
     # incremental step
+    print("[server] : Training new model ...")
     output_dir = run_incremental_step(
         dataclass,
         intent_name,
