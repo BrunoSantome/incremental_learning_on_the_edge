@@ -7,12 +7,20 @@
 # Re-training of the edge model on a new version with a new intent, evaluate old and new intents, save new model in folder, edge retrieves it, runs the same prediction and this
 # time it will know the new intent added over training.
 
+import contextlib
+import io
 import os
 import json
 import shutil
 import time
+import warnings
 from datetime import datetime
 
+import datasets
+import transformers
+
+import core.distillation_1
+import core.evaluate
 from core.configuration import load_config
 from core.dataloader import DataClass
 from core.distillation_1 import run_production_step
@@ -73,6 +81,21 @@ def _calibrate_threshold(model, tokenizer, dataclass, config):
     logits = get_logits(model, tokenizer, utterances)
     scores = energy_score(logits, T=config["ood"]["T"])
     return calibrate_threshold(scores, keep=config["ood"]["keep"])
+
+
+def _quiet_output():
+    """
+    Demo mode: dataset progress bars, training/eval tqdm bars, library warnings and wandb
+    banners off, so the transcript only shows the system's own messages. Nothing in core/ is
+    modified: the tqdm name is swapped for a pass-through in the two modules that use it.
+    """
+    os.environ.setdefault("WANDB_SILENT", "true")
+    warnings.filterwarnings("ignore")
+    datasets.disable_progress_bar()
+    transformers.logging.set_verbosity_error()
+    passthrough = lambda iterable, *args, **kwargs: iterable  # noqa: E731
+    core.distillation_1.tqdm = passthrough  # training / evaluation epoch bars
+    core.evaluate.tqdm = passthrough
 
 
 def _dir_size_mb(path):
@@ -256,7 +279,7 @@ def _stdin_utterances():
         yield utterance
 
 
-def _run_simulation(utterances, run_name="e2e"):
+def _run_simulation(utterances, run_name="e2e", quiet=True):
     """
     End-to-end simulation of the system over a sequence of utterances: the edge predicts and
     scores, unknown ones are escalated, the server generates data and retrains a new version,
@@ -268,10 +291,14 @@ def _run_simulation(utterances, run_name="e2e"):
     shipped with the release (the edge has no eval data to compute it itself).
 
     'utterances' is any iterable: typed input (run_interactive_simulation) or a scripted list
-    (run_scripted_simulation).
+    (run_scripted_simulation). quiet=True is demo mode: progress bars and the training logs of
+    core/ are hidden, only this loop's own messages are printed (everything still goes to the
+    run's log.json either way).
 
     TODO: save tokenizer into the checkpoint to not have cloud dependency on the edge model
     """
+    if quiet:
+        _quiet_output()
 
     config = load_config()
     student_key = "student1"
@@ -352,22 +379,30 @@ def _run_simulation(utterances, run_name="e2e"):
         )  # escalation -> deployed release, the closure metric
         send_escalation(utterance, edge_version)
 
-        # server: generation + retrain
+        # server: generation + retrain. In quiet mode core/'s own prints (per-epoch checkpointing,
+        # early stopping, the invented name) are captured, and summarised in one line below.
         esc = read_escalations()[0]  # exactly one
+        print("[server] calling the LLM: naming the intent and generating utterances")
         started = time.perf_counter()
-        intent_name, output_dir = run_production_step(
-            dataclass,
-            [esc["utterance"]],
-            student_key,
-            config,
-            version,
-            K=70,
-            n_generate=130,
-        )
+        with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
+            intent_name, output_dir = run_production_step(
+                dataclass,
+                [esc["utterance"]],
+                student_key,
+                config,
+                version,
+                K=70,
+                n_generate=130,
+            )
         record["server_step_seconds"] = (
             time.perf_counter() - started
         )  # LLM generation + retraining
         record["intent_name"] = intent_name
+        if intent_name is not None:
+            print(
+                f"[server] intent '{intent_name}' generated and retrained into v{version}"
+                f" ({dataclass.num_labels} intents) in {record['server_step_seconds']:.0f}s"
+            )
 
         if intent_name is None:
             print("server LLM named an existing intent: skipped")
@@ -376,8 +411,9 @@ def _run_simulation(utterances, run_name="e2e"):
             _save_log(log_path, log)
             continue
 
-        # server: cumulative evaluation V0..Vn
-        rows, _ = intents_report(dataclass, student_key, config, n_versions=version)
+        # server: cumulative evaluation V0..Vn ("Vn: has N intents" lines come from core/)
+        with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
+            rows, _ = intents_report(dataclass, student_key, config, n_versions=version)
         print(
             f"\nretention (old intents)\n{old_intent_persistance_table(rows, dataclass.id2intent)}"
         )
@@ -393,12 +429,15 @@ def _run_simulation(utterances, run_name="e2e"):
             new_model, new_tokenizer, dataclass, config
         )
         record["calibration_seconds"] = time.perf_counter() - started
-        print(f"server calibrated v{version} threshold: {new_threshold:.4f}")
+        print(
+            f"[server] calibrated v{version} threshold: {new_threshold:.4f}"
+            f" ({record['calibration_seconds']:.0f}s)"
+        )
 
         publish_release(
             version, output_dir, dataclass.id2intent, threshold=new_threshold
         )
-        print(f"server published v{version} ({intent_name})")
+        print(f"[server] published v{version} ({intent_name})")
 
         # the generated data exists only in memory: saved so the invented intents' utterances
         # (and their eval/test rows) can still be inspected after the run
@@ -448,12 +487,12 @@ def _run_simulation(utterances, run_name="e2e"):
     return log
 
 
-def run_interactive_simulation():
+def run_interactive_simulation(quiet=True):
     """Type the utterances in the terminal (live demonstration)."""
-    return _run_simulation(_stdin_utterances(), run_name="e2e_interactive")
+    return _run_simulation(_stdin_utterances(), run_name="e2e_interactive", quiet=quiet)
 
 
-def run_scripted_simulation(script_path):
+def run_scripted_simulation(script_path, quiet=True):
     """
     Same loop over a fixed list of utterances from a JSON file, so a run is reproducible and can
     be repeated byte-identically (the LLM generation is what varies between runs).
@@ -465,7 +504,7 @@ def run_scripted_simulation(script_path):
     utterances = script["utterances"] if isinstance(script, dict) else script
     name = os.path.splitext(os.path.basename(script_path))[0]
     print(f"[script] {script_path}: {len(utterances)} utterances")
-    return _run_simulation(utterances, run_name=f"e2e_{name}")
+    return _run_simulation(utterances, run_name=f"e2e_{name}", quiet=quiet)
 
 
 if __name__ == "__main__":
