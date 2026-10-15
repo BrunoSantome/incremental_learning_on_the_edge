@@ -1,3 +1,5 @@
+#Configuration file
+
 seed: 42
 device: "cuda"
 split_names: ["train_set", "test_set", "eval_set"]
